@@ -11,19 +11,8 @@ void GeminiLiveProbe::setTurnState(LiveTurnState newState, const char* reason) {
   LiveTurnState oldState = turn_state_;
   turn_state_ = newState;
 
-  if (newState == LiveTurnState::WAITING_MODEL) {
-    waiting_model_started_ms_ = millis();
-  } else {
-    waiting_model_started_ms_ = 0;
-  }
-
   if (turn_state_ == LiveTurnState::LISTENING && !realtime_recording_) {
     stopped_recording_ms_ = millis(); // Reset reference so watchdog only measures time spent within LISTENING
-  }
-  if (newState == LiveTurnState::LISTENING && oldState == LiveTurnState::RETURNING_TO_LISTEN && conversation_armed_) {
-    armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
-    Serial.printf("GeminiLive: returned to LISTENING; armed inactivity timeout reset (%lu s)\n",
-                  static_cast<unsigned long>(ARMED_INACTIVITY_TIMEOUT_MS / 1000));
   }
   Serial.printf("TURN_STATE=%s (was %s, reason: %s)\n",
                 turnStateString(),
@@ -294,90 +283,9 @@ void GeminiLiveProbe::disconnect(bool intentional, const char* finalEmotion) {
     tool_bridge_->invalidatePendingLocalAction();
   }
   utterance_input_received_ = false;
-  cancelWaitingModelGuard("disconnect");
-  waiting_model_aborted_turn_ = false;
   setTurnState(LiveTurnState::IDLE, "disconnect");
   ws_.disconnect();
   if (emotion_) emotion_->setEmotion(intentional ? intentional_disconnect_emotion_.c_str() : "error");
-}
-
-void GeminiLiveProbe::cancelWaitingModelGuard(const char* reason) {
-  if (waiting_model_started_ms_ > 0) {
-    waiting_model_started_ms_ = 0;
-  }
-}
-
-void GeminiLiveProbe::checkWaitingModelGuard() {
-  if (turn_state_ != LiveTurnState::WAITING_MODEL || waiting_model_started_ms_ == 0) {
-    return;
-  }
-
-  // Se estiver reconectando ou conexao nao estiver pronta, o guard e tratado pelo fluxo de reconexao
-  if (reconnect_requested_ || !isReady()) {
-    waiting_model_started_ms_ = 0;
-    return;
-  }
-
-  uint32_t now = millis();
-  uint32_t elapsed = now - waiting_model_started_ms_;
-  if (elapsed >= WAITING_MODEL_GUARD_MS) {
-    recoverFromWaitingModel();
-  }
-}
-
-void GeminiLiveProbe::recoverFromWaitingModel() {
-  uint32_t now = millis();
-  uint32_t elapsed = (waiting_model_started_ms_ > 0) ? (now - waiting_model_started_ms_) : 0;
-
-  Serial.printf("[DIAG:WAITING_MODEL_GUARD] started_ms=%lu elapsed_ms=%lu armed=%d turn_state=%s reconnecting=%d tool_in_flight=%d stream_aborted=%d action=%s\n",
-                static_cast<unsigned long>(waiting_model_started_ms_),
-                static_cast<unsigned long>(elapsed),
-                conversation_armed_ ? 1 : 0,
-                turnStateString(),
-                reconnect_requested_ ? 1 : 0,
-                tool_call_in_flight_ ? 1 : 0,
-                stream_aborted_ ? 1 : 0,
-                conversation_armed_ ? "RECOVER_TO_LISTENING" : "RECOVER_TO_IDLE");
-
-  waiting_model_started_ms_ = 0;
-  waiting_model_aborted_turn_ = true;
-
-  // Limpar flags transitorias do turno travado
-  local_gate_open_ = false;
-  local_gate_was_triggered_ = false;
-  gate_cross_down_logged_ = false;
-  speech_start_seen_ = false;
-  speech_end_seen_ = false;
-  noise_gate_hangover_ = 0;
-  post_speech_silence_countdown_ = 0;
-  utterance_input_received_ = false;
-  pending_text_turn_ = false;
-  pending_text_ = "";
-  transcript_output_buffer_ = "";
-  response_complete_received_ = false;
-  tool_call_in_flight_ = false;
-  stream_aborted_ = false;
-
-  if (conversation_armed_) {
-    // Voltar com seguranca para LISTENING e reabrir mic
-    setTurnState(LiveTurnState::LISTENING, "waiting_model_guard timeout; recovered to LISTENING");
-    if (emotion_) emotion_->setEmotion("listening");
-    armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
-    Serial.printf("GeminiLive: returned to LISTENING via guard; armed inactivity timeout reset (%lu s)\n",
-                  static_cast<unsigned long>(ARMED_INACTIVITY_TIMEOUT_MS / 1000));
-
-    // Reabrir mic
-    if (isReady() && !speaking_) {
-      startRealtimeRecord();
-    } else {
-      pending_start_recording_ = true;
-    }
-  } else {
-    // Voltar para IDLE
-    setTurnState(LiveTurnState::IDLE, "waiting_model_guard timeout; recovered to IDLE");
-    if (emotion_) emotion_->setEmotion("neutral");
-    Serial.println("Status: Tap or wave to talk");
-  }
 }
 
 void GeminiLiveProbe::loop() {
@@ -571,7 +479,6 @@ void GeminiLiveProbe::loop() {
     prebuffer_actual_chunks_ = 0;
     underrun_count_ = 0;
     tool_call_gap_count_ = 0;
-    max_loop_duration_ms_ = 0;
     if (end_session_requested_) {
       end_session_requested_ = false;
       end_session_requested_ms_ = 0;
@@ -579,36 +486,25 @@ void GeminiLiveProbe::loop() {
       if (emotion_) emotion_->setEmotion("sleep");
       Serial.println("Status: sleeping...");
       disconnect(true, "sleep");
-    } else if (conversation_armed_ && (continuous_conversation_ || pending_start_recording_) && isReady()) {
+    } else if ((continuous_conversation_ || pending_start_recording_) && isReady()) {
       pending_start_recording_ = false;
       resume_conversation_after_text_ = false;
       Serial.println("Status: listening...");
       startRealtimeRecord();
-    } else if (conversation_armed_ && (pending_start_recording_ || (continuous_conversation_ && !isReady()))) {
+    } else if (pending_start_recording_ || (continuous_conversation_ && !isReady())) {
       // Reconnection or setup is still in flight; keep pending_start_recording_ true
       resume_conversation_after_text_ = false;
       setTurnState(LiveTurnState::WAITING_MODEL, "turn finished; waiting for reconnect/setup");
       Serial.println("GeminiLive: audio drained; waiting for connection/setupComplete to open mic");
     } else {
       resume_conversation_after_text_ = false;
-      setTurnState(LiveTurnState::IDLE, "turn complete (disarmed or not continuous)");
+      setTurnState(LiveTurnState::IDLE, "turn complete (not continuous)");
       if (emotion_) emotion_->setEmotion("neutral");
       Serial.println("Status: Tap or wave to talk");
     }
   }
 
-  // Timeout de inatividade de 15s so existe em LISTENING ocioso
-  if (conversation_armed_ && turn_state_ == LiveTurnState::LISTENING && armed_timeout_deadline_ms_ > 0) {
-    if (millis() > armed_timeout_deadline_ms_) {
-      Serial.println("GeminiLive: armed conversation inactivity timeout (15s); disarming");
-      disarmConversation("TIMEOUT");
-    }
-  }
-
-  // Watchdog exclusivo de WAITING_MODEL (6000ms)
-  checkWaitingModelGuard();
-
-  if (conversation_armed_ && pending_start_recording_ && isReady() && !speaking_) {
+  if (pending_start_recording_ && isReady() && !speaking_) {
     if (speech_finished_ms_ == 0 || millis() - speech_finished_ms_ >= 400) {
       pending_start_recording_ = false;
       startRealtimeRecord();
@@ -621,7 +517,7 @@ void GeminiLiveProbe::loop() {
     disconnect(true, "sleep");
     return;
   }
-  if (conversation_armed_ && continuous_conversation_ && isReady() && !realtime_recording_ && !speaking_ &&
+  if (continuous_conversation_ && isReady() && !realtime_recording_ && !speaking_ &&
       !pending_start_recording_ && stopped_recording_ms_ &&
       millis() - stopped_recording_ms_ > CONTINUOUS_RECORD_WATCHDOG_MS) {
     if (turn_state_ == LiveTurnState::TOOL_CALL ||
@@ -967,11 +863,6 @@ void GeminiLiveProbe::streamAudioDeltaBase64(const char* b64, size_t b64Len) {
 }
 
 void GeminiLiveProbe::startRealtimeRecord() {
-  if (!conversation_armed_) {
-    Serial.println("GeminiLive: startRealtimeRecord blocked: conversation not armed");
-    pending_start_recording_ = false;
-    return;
-  }
   if (physical_mute_) {
     Serial.println("GeminiLive: record blocked by physical mute");
     pending_start_recording_ = false;
@@ -1020,7 +911,6 @@ void GeminiLiveProbe::startRealtimeRecord() {
     realtime_recording_ = true;
     mic_dma_in_progress_ = false;
     utterance_input_received_ = false;
-    waiting_model_aborted_turn_ = false;
   }
 }
 
@@ -1070,48 +960,15 @@ void GeminiLiveProbe::notifyMicGainChanged(uint8_t oldGain, uint8_t newGain) {
                 static_cast<unsigned long>(gain_settle_until_ms_));
 }
 
-bool GeminiLiveProbe::armConversation(const char* source) {
+bool GeminiLiveProbe::requestConversationStart() {
   if (physical_mute_) {
-    Serial.println("GeminiLive: armConversation blocked by physical mute");
+    Serial.println("GeminiLive: requestConversationStart blocked by physical mute");
     return false;
   }
   if (isDoNotDisturb()) {
-    Serial.println("GeminiLive: armConversation blocked by DND");
+    Serial.println("GeminiLive: requestConversationStart blocked by DND");
     return false;
   }
-
-  // Gesto/touch durante SPEAKING: ignorar se ja armed, nao alterar LiveTurnState
-  if (speaking_ || turn_state_ == LiveTurnState::SPEAKING) {
-    if (conversation_armed_) {
-      Serial.println("GeminiLive: armConversation ignored during SPEAKING (already armed)");
-      return true;
-    }
-  }
-
-  bool was_armed = conversation_armed_;
-  conversation_armed_ = true;
-  armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
-
-  if (source && strcmp(source, "FAST_GESTURE") == 0) {
-    ++arm_count_gesture_;
-  } else if (source && strcmp(source, "TOUCH") == 0) {
-    ++arm_count_touch_;
-  }
-
-  Serial.printf("[DIAG:CONVERSATION_ARM] armed=1 source=%s turn_state=%s timestamp=%lu audio_sent_while_disarmed=%lu arm_count_gesture=%lu arm_count_touch=%lu disarm_count_timeout=%lu\n",
-                source ? source : "UNKNOWN",
-                turnStateString(),
-                millis(),
-                static_cast<unsigned long>(audio_sent_while_disarmed_),
-                static_cast<unsigned long>(arm_count_gesture_),
-                static_cast<unsigned long>(arm_count_touch_),
-                static_cast<unsigned long>(disarm_count_timeout_));
-
-  // Se ja estava ARMED e ja em LISTENING ou em turno ativo, nao duplicar transicao
-  if (was_armed && (turn_state_ == LiveTurnState::LISTENING || isTurnBusy())) {
-    return true;
-  }
-
   continuous_conversation_ = true;
   last_activity_ms_ = millis();
 
@@ -1122,7 +979,6 @@ bool GeminiLiveProbe::armConversation(const char* source) {
   }
 
   if (speaking_ || isTurnBusy()) {
-    // Nao altera LiveTurnState se ja estiver em turno do modelo
     return true;
   }
 
@@ -1131,43 +987,16 @@ bool GeminiLiveProbe::armConversation(const char* source) {
   return true;
 }
 
-void GeminiLiveProbe::disarmConversation(const char* reason) {
-  if (!conversation_armed_) return;
-
-  conversation_armed_ = false;
-  armed_timeout_deadline_ms_ = 0;
+void GeminiLiveProbe::stopConversation() {
   pending_start_recording_ = false;
   continuous_conversation_ = false;
-
-  if (reason && strcmp(reason, "TIMEOUT") == 0) {
-    ++disarm_count_timeout_;
-  }
-
   if (realtime_recording_) {
     stopRealtimeRecord();
   }
-
   if (turn_state_ != LiveTurnState::SPEAKING && turn_state_ != LiveTurnState::TOOL_CALL) {
-    setTurnState(LiveTurnState::IDLE, reason ? reason : "disarmed");
+    setTurnState(LiveTurnState::IDLE, "stopped");
     if (emotion_) emotion_->setEmotion("neutral");
   }
-
-  Serial.printf("[DIAG:CONVERSATION_ARM] armed=0 reason=%s turn_state=%s timestamp=%lu audio_sent_while_disarmed=%lu arm_count_gesture=%lu arm_count_touch=%lu disarm_count_timeout=%lu\n",
-                reason ? reason : "UNKNOWN",
-                turnStateString(),
-                millis(),
-                static_cast<unsigned long>(audio_sent_while_disarmed_),
-                static_cast<unsigned long>(arm_count_gesture_),
-                static_cast<unsigned long>(arm_count_touch_),
-                static_cast<unsigned long>(disarm_count_timeout_));
-}
-
-bool GeminiLiveProbe::requestConversationStart() {
-  return armConversation("TOUCH");
-}
-
-void GeminiLiveProbe::stopConversation() {
-  disarmConversation("STOP");
   if (!speaking_) disconnect(true);
 }
 
@@ -1263,21 +1092,14 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
   }
   last_mic_rms_ = static_cast<uint16_t>(r > 65535 ? 65535 : r);
 
-  // If in DND, muted, or conversation not armed, immediately drop chunk and do not stream to cloud
-  if (!conversation_armed_ || turn_state_ != LiveTurnState::LISTENING || physical_mute_ || isDoNotDisturb()) {
-    ++audio_sent_while_disarmed_;
+  // If in DND or muted, immediately drop chunk
+  if (turn_state_ != LiveTurnState::LISTENING || physical_mute_ || isDoNotDisturb()) {
     return;
   }
 
-  // Local Noise Gate with Hysteresis (Phase 3 operational: OPEN >= 450, CLOSE <= 350)
-  bool voiceActive = false;
-  if (!local_gate_open_) {
-    voiceActive = (last_mic_rms_ >= kNoiseGateOpenRmsThreshold);
-  } else {
-    voiceActive = (last_mic_rms_ > kNoiseGateCloseRmsThreshold);
-  }
+  // Local Noise Gate (Patch 4 audio stable baseline: threshold = 220)
+  bool voiceActive = (last_mic_rms_ >= kNoiseGateRmsThreshold);
   if (voiceActive) {
-    armed_timeout_deadline_ms_ = 0; // Cancelar timeout de inatividade assim que fala valida comecar
     if (!local_gate_open_) {
       local_gate_open_ = true;
       local_gate_was_triggered_ = true;
@@ -1291,7 +1113,7 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
                     millis(),
                     static_cast<unsigned>(last_mic_rms_),
                     static_cast<unsigned>(last_mic_peak_),
-                    static_cast<unsigned>(kNoiseGateOpenRmsThreshold),
+                    static_cast<unsigned>(kNoiseGateRmsThreshold),
                     static_cast<unsigned>(M5.Mic.config().magnification),
                     static_cast<unsigned>(M5.Mic.config().noise_filter_level),
                     turnStateString());
@@ -1305,7 +1127,7 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
                     millis(),
                     static_cast<unsigned>(last_mic_rms_),
                     static_cast<unsigned>(last_mic_peak_),
-                    static_cast<unsigned>(kNoiseGateCloseRmsThreshold),
+                    static_cast<unsigned>(kNoiseGateRmsThreshold),
                     static_cast<unsigned>(noise_gate_hangover_),
                     turnStateString());
     }
@@ -1422,11 +1244,6 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
                     static_cast<unsigned>(M5.Mic.config().magnification),
                     static_cast<unsigned>(M5.Mic.config().noise_filter_level),
                     turnStateString());
-      Serial.println("GeminiLive: speech turn finished -> silence committed for instant AI answer");
-      setTurnState(LiveTurnState::WAITING_MODEL, "user speech finished, silence committed");
-      stopRealtimeRecord();
-      if (emotion_ && !speaking_) emotion_->setEmotion("thinking");
-      return; // Do not schedule next DMA chunk
     }
   }
 
@@ -1438,8 +1255,7 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
 }
 
 void GeminiLiveProbe::sendRealtimeAudioBase64(const String& b64) {
-  if (!conversation_armed_ || turn_state_ != LiveTurnState::LISTENING || physical_mute_ || isDoNotDisturb()) {
-    ++audio_sent_while_disarmed_;
+  if (turn_state_ != LiveTurnState::LISTENING || physical_mute_ || isDoNotDisturb()) {
     return;
   }
   String out;
@@ -1563,8 +1379,6 @@ void GeminiLiveProbe::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
         if (self_->emotion_) self_->emotion_->setEmotion(should_sleep ? "sleep" : self_->intentional_disconnect_emotion_.c_str());
       }
       self_->continuous_conversation_ = false;
-      self_->cancelWaitingModelGuard("ws disconnected");
-      self_->waiting_model_aborted_turn_ = false;
       self_->pending_start_recording_ = false;
       self_->pending_text_turn_ = false;
       self_->resume_conversation_after_text_ = false;
@@ -1615,20 +1429,6 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
                      !doc["serverContent"]["generationComplete"].isNull();
   bool hasModelTurn = !doc["serverContent"]["modelTurn"].isNull();
 
-  if (hasAudio || hasModelTurn || hasOutTx || hasTool || hasComplete) {
-    cancelWaitingModelGuard("valid server content");
-  }
-
-  if (waiting_model_aborted_turn_) {
-    if (hasComplete) {
-      waiting_model_aborted_turn_ = false;
-      Serial.println("GeminiLive: aborted turn completed on server; cleared abort flag");
-    } else {
-      Serial.println("GeminiLive: dropping late server content from aborted turn");
-    }
-    return;
-  }
-
   // Only emit detailed breakdown for large frames or frames containing significant content
   bool verbose = (length > 8000) || t_json_ms > 30;
 
@@ -1641,8 +1441,6 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
 
   JsonVariant setupComplete = doc["setupComplete"];
   if (!setupComplete.isNull()) {
-    cancelWaitingModelGuard("setupComplete");
-    waiting_model_aborted_turn_ = false;
     Serial.println("GeminiLive: setupComplete");
     setup_complete_ = true;
     last_activity_ms_ = millis();
@@ -1655,14 +1453,7 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
       Serial.println("GeminiLive: setupComplete; sending pending text turn");
       sendTextTurn(toSend);
     } else if (pending_start_recording_) {
-      if (!conversation_armed_) {
-        Serial.println("GeminiLive: setupComplete while disarmed; ignoring pending record");
-        pending_start_recording_ = false;
-        setTurnState(LiveTurnState::IDLE, "reconnect while disarmed");
-      } else if (armed_timeout_deadline_ms_ > 0 && millis() > armed_timeout_deadline_ms_) {
-        Serial.println("GeminiLive: setupComplete but armed timeout expired; disarming");
-        disarmConversation("TIMEOUT");
-      } else if (stream_aborted_ || speaking_ || audio_buffered_count_ > 0 || M5.Speaker.isPlaying(1) > 0) {
+      if (stream_aborted_ || speaking_ || audio_buffered_count_ > 0 || M5.Speaker.isPlaying(1) > 0) {
         Serial.println("GeminiLive: setupComplete while audio still draining; deferring startRealtimeRecord");
       } else {
         pending_start_recording_ = false;
@@ -1720,7 +1511,6 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
   // Immediately ensure mic is closed to prevent local room noise from contaminating the stream
   const char* outText = serverContent["outputTranscription"]["text"];
   if (!outText) outText = serverContent["output_transcription"]["text"];
-  bool hasModelTurn = !serverContent["modelTurn"].isNull();
   if ((hasModelTurn || (outText && outText[0])) && turn_state_ != LiveTurnState::SPEAKING) {
     if (realtime_recording_) {
       Serial.println("GeminiLive: model response starting -> closing mic immediately");
