@@ -10,6 +10,13 @@ void GeminiLiveProbe::setTurnState(LiveTurnState newState, const char* reason) {
   if (turn_state_ == newState) return;
   LiveTurnState oldState = turn_state_;
   turn_state_ = newState;
+
+  if (newState == LiveTurnState::WAITING_MODEL) {
+    waiting_model_started_ms_ = millis();
+  } else {
+    waiting_model_started_ms_ = 0;
+  }
+
   if (turn_state_ == LiveTurnState::LISTENING && !realtime_recording_) {
     stopped_recording_ms_ = millis(); // Reset reference so watchdog only measures time spent within LISTENING
   }
@@ -287,9 +294,90 @@ void GeminiLiveProbe::disconnect(bool intentional, const char* finalEmotion) {
     tool_bridge_->invalidatePendingLocalAction();
   }
   utterance_input_received_ = false;
+  cancelWaitingModelGuard("disconnect");
+  waiting_model_aborted_turn_ = false;
   setTurnState(LiveTurnState::IDLE, "disconnect");
   ws_.disconnect();
   if (emotion_) emotion_->setEmotion(intentional ? intentional_disconnect_emotion_.c_str() : "error");
+}
+
+void GeminiLiveProbe::cancelWaitingModelGuard(const char* reason) {
+  if (waiting_model_started_ms_ > 0) {
+    waiting_model_started_ms_ = 0;
+  }
+}
+
+void GeminiLiveProbe::checkWaitingModelGuard() {
+  if (turn_state_ != LiveTurnState::WAITING_MODEL || waiting_model_started_ms_ == 0) {
+    return;
+  }
+
+  // Se estiver reconectando ou conexao nao estiver pronta, o guard e tratado pelo fluxo de reconexao
+  if (reconnect_requested_ || !isReady()) {
+    waiting_model_started_ms_ = 0;
+    return;
+  }
+
+  uint32_t now = millis();
+  uint32_t elapsed = now - waiting_model_started_ms_;
+  if (elapsed >= WAITING_MODEL_GUARD_MS) {
+    recoverFromWaitingModel();
+  }
+}
+
+void GeminiLiveProbe::recoverFromWaitingModel() {
+  uint32_t now = millis();
+  uint32_t elapsed = (waiting_model_started_ms_ > 0) ? (now - waiting_model_started_ms_) : 0;
+
+  Serial.printf("[DIAG:WAITING_MODEL_GUARD] started_ms=%lu elapsed_ms=%lu armed=%d turn_state=%s reconnecting=%d tool_in_flight=%d stream_aborted=%d action=%s\n",
+                static_cast<unsigned long>(waiting_model_started_ms_),
+                static_cast<unsigned long>(elapsed),
+                conversation_armed_ ? 1 : 0,
+                turnStateString(),
+                reconnect_requested_ ? 1 : 0,
+                tool_call_in_flight_ ? 1 : 0,
+                stream_aborted_ ? 1 : 0,
+                conversation_armed_ ? "RECOVER_TO_LISTENING" : "RECOVER_TO_IDLE");
+
+  waiting_model_started_ms_ = 0;
+  waiting_model_aborted_turn_ = true;
+
+  // Limpar flags transitorias do turno travado
+  local_gate_open_ = false;
+  local_gate_was_triggered_ = false;
+  gate_cross_down_logged_ = false;
+  speech_start_seen_ = false;
+  speech_end_seen_ = false;
+  noise_gate_hangover_ = 0;
+  post_speech_silence_countdown_ = 0;
+  utterance_input_received_ = false;
+  pending_text_turn_ = false;
+  pending_text_ = "";
+  transcript_output_buffer_ = "";
+  response_complete_received_ = false;
+  tool_call_in_flight_ = false;
+  stream_aborted_ = false;
+
+  if (conversation_armed_) {
+    // Voltar com seguranca para LISTENING e reabrir mic
+    setTurnState(LiveTurnState::LISTENING, "waiting_model_guard timeout; recovered to LISTENING");
+    if (emotion_) emotion_->setEmotion("listening");
+    armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
+    Serial.printf("GeminiLive: returned to LISTENING via guard; armed inactivity timeout reset (%lu s)\n",
+                  static_cast<unsigned long>(ARMED_INACTIVITY_TIMEOUT_MS / 1000));
+
+    // Reabrir mic
+    if (isReady() && !speaking_) {
+      startRealtimeRecord();
+    } else {
+      pending_start_recording_ = true;
+    }
+  } else {
+    // Voltar para IDLE
+    setTurnState(LiveTurnState::IDLE, "waiting_model_guard timeout; recovered to IDLE");
+    if (emotion_) emotion_->setEmotion("neutral");
+    Serial.println("Status: Tap or wave to talk");
+  }
 }
 
 void GeminiLiveProbe::loop() {
@@ -516,6 +604,9 @@ void GeminiLiveProbe::loop() {
       disarmConversation("TIMEOUT");
     }
   }
+
+  // Watchdog exclusivo de WAITING_MODEL (6000ms)
+  checkWaitingModelGuard();
 
   if (conversation_armed_ && pending_start_recording_ && isReady() && !speaking_) {
     if (speech_finished_ms_ == 0 || millis() - speech_finished_ms_ >= 400) {
@@ -929,6 +1020,7 @@ void GeminiLiveProbe::startRealtimeRecord() {
     realtime_recording_ = true;
     mic_dma_in_progress_ = false;
     utterance_input_received_ = false;
+    waiting_model_aborted_turn_ = false;
   }
 }
 
@@ -1471,6 +1563,8 @@ void GeminiLiveProbe::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
         if (self_->emotion_) self_->emotion_->setEmotion(should_sleep ? "sleep" : self_->intentional_disconnect_emotion_.c_str());
       }
       self_->continuous_conversation_ = false;
+      self_->cancelWaitingModelGuard("ws disconnected");
+      self_->waiting_model_aborted_turn_ = false;
       self_->pending_start_recording_ = false;
       self_->pending_text_turn_ = false;
       self_->resume_conversation_after_text_ = false;
@@ -1519,6 +1613,21 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
   bool hasTool     = !doc["toolCall"].isNull();
   bool hasComplete = !doc["serverContent"]["turnComplete"].isNull() ||
                      !doc["serverContent"]["generationComplete"].isNull();
+  bool hasModelTurn = !doc["serverContent"]["modelTurn"].isNull();
+
+  if (hasAudio || hasModelTurn || hasOutTx || hasTool || hasComplete) {
+    cancelWaitingModelGuard("valid server content");
+  }
+
+  if (waiting_model_aborted_turn_) {
+    if (hasComplete) {
+      waiting_model_aborted_turn_ = false;
+      Serial.println("GeminiLive: aborted turn completed on server; cleared abort flag");
+    } else {
+      Serial.println("GeminiLive: dropping late server content from aborted turn");
+    }
+    return;
+  }
 
   // Only emit detailed breakdown for large frames or frames containing significant content
   bool verbose = (length > 8000) || t_json_ms > 30;
@@ -1532,6 +1641,8 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
 
   JsonVariant setupComplete = doc["setupComplete"];
   if (!setupComplete.isNull()) {
+    cancelWaitingModelGuard("setupComplete");
+    waiting_model_aborted_turn_ = false;
     Serial.println("GeminiLive: setupComplete");
     setup_complete_ = true;
     last_activity_ms_ = millis();

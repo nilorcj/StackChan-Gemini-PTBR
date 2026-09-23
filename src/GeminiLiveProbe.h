@@ -203,6 +203,9 @@ class GeminiLiveProbe {
   bool conversation_armed_ = false;
   uint32_t armed_timeout_deadline_ms_ = 0;
   static constexpr uint32_t ARMED_INACTIVITY_TIMEOUT_MS = 15000;
+  static constexpr uint32_t WAITING_MODEL_GUARD_MS = 6000;
+  uint32_t waiting_model_started_ms_ = 0;
+  bool waiting_model_aborted_turn_ = false;
   uint32_t audio_sent_while_disarmed_ = 0;
   uint32_t arm_count_gesture_ = 0;
   uint32_t arm_count_touch_ = 0;
@@ -307,6 +310,9 @@ class GeminiLiveProbe {
   void recordAndSendAudioChunk();
   void playListeningChirp();
   void sendRealtimeAudioBase64(const String& b64);
+  void cancelWaitingModelGuard(const char* reason = nullptr);
+  void checkWaitingModelGuard();
+  void recoverFromWaitingModel();
   String encodeBase64(const uint8_t* input, size_t size);
   int decodeBase64(const char* input, int size, char* output);
 };
