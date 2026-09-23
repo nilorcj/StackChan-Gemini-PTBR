@@ -1,0 +1,21 @@
+{
+    "name": "StackChan-BSP",
+    "description": "StackChan board support package for Arduino develop",
+    "keywords": "M5Stack,StackChan",
+    "authors": {
+        "name": "M5Stack"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/m5stack/StackChan-BSP"
+    },
+    "dependencies": {
+        "M5Unified": "*",
+        "M5GFX": "*",
+        "IRremoteESP8266": "*",
+        "M5Unit-NFC": "*"
+    },
+    "version": "1.0.2",
+    "frameworks": "arduino",
+    "platforms": "espressif32"
+}

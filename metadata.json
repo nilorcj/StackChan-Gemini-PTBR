@@ -1,0 +1,11 @@
+{
+  "name": "StackChan Gemini Firmware & Robot Simulator",
+  "description": "Interactive web simulator and runtime control panel for M5Stack CoreS3 StackChan robot with Gemini Live voice AI, procedural face emotions, servo gestures, memory store, camera, sensor diagnostics, and tool gateway.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

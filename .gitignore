@@ -1,0 +1,28 @@
+# PlatformIO build output
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Generated firmware/build artifacts
+*.bin
+*.elf
+*.map
+*.hex
+compile_commands.json
+
+# Local SD-card/runtime copies and secrets
+/app/
+app/
+StackChan/
+secrets/
+*.local.json
+*.local.txt
+*.local.h
+
+# Local/editor files
+.vscode/
+.DS_Store
+*.log
+packages/
+
+.github/
