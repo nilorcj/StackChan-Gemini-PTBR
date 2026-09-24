@@ -1337,6 +1337,24 @@ void loop() {
   static int16_t s_touch_start_x = 0;
   static int16_t s_touch_start_y = 0;
   static uint32_t s_touch_start_ms = 0;
+  static uint32_t s_drawer_opened_at_ms = 0;
+
+  auto updateQuickStatusData = [&]() {
+    int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
+    String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
+    float batVolts = M5StackChan.getBatteryVoltage();
+    int batLevel = M5.Power.getBatteryLevel();
+    uint8_t batPct = (batLevel >= 0) ? static_cast<uint8_t>(batLevel) :
+                     (batVolts > 3.4f ? static_cast<uint8_t>(constrain((batVolts - 3.4f) / 0.8f * 100.0f, 0.0f, 100.0f)) : 0);
+    bool charging = (M5StackChan.getBatteryCurrent() < -0.01f) || M5.Power.isCharging();
+    uint8_t iaState = 0;
+    if (gemini.isReady()) {
+      iaState = 2; // IA ON
+    } else if (gemini.isConnected()) {
+      iaState = 1; // IA ...
+    }
+    emotion.setQuickStatusData(rssi, ip, batPct, batVolts, charging, iaState, g_latest_temp, g_latest_hum, g_current_distance_mm);
+  };
 
   auto t = M5.Touch.getDetail();
   if (t.wasPressed() || (t.isPressed() && !s_screen_touching)) {
@@ -1353,34 +1371,63 @@ void loop() {
     int16_t dx = abs(t.x - s_touch_start_x);
     if (s_touch_start_y < 175 && dy >= 20 && dy > (dx / 2)) {
       s_drawer_triggered = true;
+      s_drawer_opened_at_ms = now;
       Serial.printf("Display: SWIPE DOWN drawer activated (start_y=%d cur_y=%d dy=%d dx=%d)\n", s_touch_start_y, t.y, dy, dx);
       unitPaHub.click();
-      int rssi = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : -100;
-      String ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
-      float batVolts = M5StackChan.getBatteryVoltage();
-      int batLevel = M5.Power.getBatteryLevel();
-      uint8_t batPct = (batLevel >= 0) ? static_cast<uint8_t>(batLevel) :
-                       (batVolts > 3.4f ? static_cast<uint8_t>(constrain((batVolts - 3.4f) / 0.8f * 100.0f, 0.0f, 100.0f)) : 0);
-      bool charging = (M5StackChan.getBatteryCurrent() < -0.01f) || M5.Power.isCharging();
-      bool geminiReady = gemini.isReady();
-      emotion.setQuickStatusData(rssi, ip, batPct, batVolts, charging, geminiReady, g_latest_temp, g_latest_hum);
+      updateQuickStatusData();
       emotion.showQuickStatus(6000);
     }
   }
 
   if ((t.wasReleased() || (!t.isPressed() && s_screen_touching)) && s_screen_touching) {
     s_screen_touching = false;
+    uint32_t touchDuration = now - s_touch_start_ms;
+    int16_t totalDx = abs(t.x - s_touch_start_x);
+    int16_t totalDy = t.y - s_touch_start_y;
+
+    // Check if release completes a swipe down that wasn't caught dynamically
+    if (!s_drawer_triggered && s_touch_start_y < 175 && totalDy >= 20 && totalDy > (totalDx / 2)) {
+      s_drawer_triggered = true;
+      s_drawer_opened_at_ms = now;
+      Serial.printf("Display: SWIPE DOWN drawer activated on release (start_y=%d end_y=%d dy=%d dx=%d)\n", s_touch_start_y, t.y, totalDy, totalDx);
+      unitPaHub.click();
+      updateQuickStatusData();
+      emotion.showQuickStatus(6000);
+    }
+
     if (!s_drawer_triggered) {
-      if (emotion.isQuickStatusActive()) {
-        emotion.hideQuickStatus();
-        Serial.println("Display: quick status drawer dismissed by touch");
+      // Valid tap criteria: |dx| < 12 && |dy| < 12 && duration < 400 ms
+      bool isValidTap = (totalDx < 12) && (abs(totalDy) < 12) && (touchDuration < 400);
+
+      if (isValidTap) {
+        if (emotion.isQuickStatusActive()) {
+          // Anti-bounce: ignore close events within 600 ms of drawer opening
+          if (now - s_drawer_opened_at_ms >= 600) {
+            emotion.hideQuickStatus();
+            Serial.println("Display: quick status drawer dismissed by deliberate tap");
+          } else {
+            Serial.println("Display: tap ignored during drawer open 600ms anti-bounce cooldown");
+          }
+        } else {
+          // Normal screen tap
+          Serial.printf("Display touch click at x=%d y=%d (duration=%lums dx=%d dy=%d)\n", t.x, t.y, touchDuration, totalDx, totalDy);
+          dialogueToggle = true;
+        }
       } else {
-        // Normal screen tap
-        Serial.printf("Display touch click at x=%d y=%d\n", t.x, t.y);
-        dialogueToggle = true;
+        // Short swipe or drag that is neither a tap nor a valid swipe: ignore (do not trigger tap)
+        Serial.printf("Display touch discarded (duration=%lums dx=%d dy=%d)\n", touchDuration, totalDx, totalDy);
       }
     }
     s_drawer_triggered = false;
+  }
+
+  // Periodic sensor/status refresh while drawer is actively displayed
+  if (emotion.isQuickStatusActive()) {
+    static uint32_t s_last_drawer_data_update_ms = 0;
+    if (now - s_last_drawer_data_update_ms >= 200) {
+      s_last_drawer_data_update_ms = now;
+      updateQuickStatusData();
+    }
   }
 #endif
 

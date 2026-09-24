@@ -68,6 +68,7 @@ class EmotionController {
     quickStatusUntilMs_ = millis() + durationMs;
     forceFullRedraw_ = true;
     needsFaceRedraw_ = true;
+    lastDrawerSnapshot_ = DrawerSnapshot();
   }
   bool isQuickStatusActive() const { return millis() < quickStatusUntilMs_; }
   void hideQuickStatus() {
@@ -76,15 +77,16 @@ class EmotionController {
     needsFaceRedraw_ = true;
   }
   void setQuickStatusData(int rssi, const String& ip, uint8_t batPct, float batVolts,
-                          bool charging, bool geminiReady, float temp, float hum) {
+                          bool charging, uint8_t iaState, float temp, float hum, int tofMm = -1) {
     wifiRssi_ = rssi;
     ipAddress_ = ip;
     batteryPct_ = batPct;
     batteryVolts_ = batVolts;
     batteryCharging_ = charging;
-    geminiConnected_ = geminiReady;
+    iaStatus_ = iaState;
     currentTemp_ = temp;
     currentHumidity_ = hum;
+    currentTofMm_ = tofMm;
   }
 
   bool setEmotion(const String& emotion);
@@ -130,11 +132,26 @@ class EmotionController {
   float batteryVolts_ = 4.15f;
   bool batteryCharging_ = false;
   bool geminiConnected_ = false;
+  uint8_t iaStatus_ = 0; // 0=OFF, 1=..., 2=ON
   float currentTemp_ = 0.0f;
   float currentHumidity_ = 0.0f;
+  int currentTofMm_ = -1;
   bool isSpeaking_ = false;
   bool micActive_ = false;
   bool physicalMute_ = false;
+
+  struct DrawerSnapshot {
+    int rssi = -999;
+    String ip = "";
+    uint8_t batPct = 255;
+    uint8_t iaStatus = 255;
+    float temp = -999.0f;
+    float hum = -999.0f;
+    int tofMm = -999;
+    uint32_t lastTofRenderMs = 0;
+  };
+  DrawerSnapshot lastDrawerSnapshot_;
+  bool quickStatusDataChanged();
 
   // Partial face rendering sprite geometry constants (strictly non-overlapping)
   static constexpr int kMouthSpriteX = 110;

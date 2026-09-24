@@ -684,7 +684,9 @@ void EmotionController::renderFace() {
     fullRedraw = true;
   } else if (isShaken_ != lastRenderedShaken_ || isLifted_ != lastRenderedLifted_ || isShaken_ || isLifted_) {
     fullRedraw = true;
-  } else if (isQuickStatusActive() != lastRenderedQuickStatus_ || isQuickStatusActive()) {
+  } else if (isQuickStatusActive() != lastRenderedQuickStatus_) {
+    fullRedraw = true;
+  } else if (isQuickStatusActive() && quickStatusDataChanged()) {
     fullRedraw = true;
   } else if (micActive_ != lastRenderedMicActive_ || physicalMute_ != lastRenderedPhysicalMute_) {
     fullRedraw = true;
@@ -713,42 +715,122 @@ void EmotionController::renderFace() {
   renderPartialFace(display, s);
 }
 
+bool EmotionController::quickStatusDataChanged() {
+  uint32_t now = millis();
+  bool changed = false;
+
+  if (iaStatus_ != lastDrawerSnapshot_.iaStatus) {
+    changed = true;
+  } else if (ipAddress_ != lastDrawerSnapshot_.ip) {
+    changed = true;
+  } else if (abs(static_cast<int>(batteryPct_) - static_cast<int>(lastDrawerSnapshot_.batPct)) >= 1) {
+    changed = true;
+  } else if (fabs(currentTemp_ - lastDrawerSnapshot_.temp) >= 0.2f) {
+    changed = true;
+  } else if (fabs(currentHumidity_ - lastDrawerSnapshot_.hum) >= 1.0f) {
+    changed = true;
+  } else if (abs(currentTofMm_ - lastDrawerSnapshot_.tofMm) >= 20 && (now - lastDrawerSnapshot_.lastTofRenderMs >= 500)) {
+    changed = true;
+  }
+
+  if (changed) {
+    lastDrawerSnapshot_.iaStatus = iaStatus_;
+    lastDrawerSnapshot_.ip = ipAddress_;
+    lastDrawerSnapshot_.batPct = batteryPct_;
+    lastDrawerSnapshot_.temp = currentTemp_;
+    lastDrawerSnapshot_.hum = currentHumidity_;
+    if (abs(currentTofMm_ - lastDrawerSnapshot_.tofMm) >= 20) {
+      lastDrawerSnapshot_.tofMm = currentTofMm_;
+      lastDrawerSnapshot_.lastTofRenderMs = now;
+    }
+  }
+
+  return changed;
+}
+
 void EmotionController::drawQuickStatusDrawer(M5Canvas& d) {
   if (millis() >= quickStatusUntilMs_) return;
-  int dw = 304, dh = 58, dx = 8, dy = 4;
-  d.fillRoundRect(dx, dy, dw, dh, 12, 0x08C4); // Navy container
-  d.drawRoundRect(dx, dy, dw, dh, 12, 0x3DFE); // Glowing cyan border
-  d.drawRoundRect(dx + 1, dy + 1, dw - 2, dh - 2, 11, 0x0210);
+  int dw = 304, dh = 46, dx = 8, dy = 4;
+  d.fillRoundRect(dx, dy, dw, dh, 8, 0x08C4); // Navy container
+  d.drawRoundRect(dx, dy, dw, dh, 8, 0x3DFE); // Glowing cyan border
 
-  // Line 1: Wi-Fi RSSI + IP Address
+  // --- Line 1: Wi-Fi RSSI Bars + IP Address + IA Status ---
+  uint16_t cActive = 0x3DFE;
+  uint16_t cDim = 0x1908;
+  int bars = 0;
+  if (wifiRssi_ > -60) bars = 4;
+  else if (wifiRssi_ > -75) bars = 3;
+  else if (wifiRssi_ > -85) bars = 2;
+  else if (wifiRssi_ > -100) bars = 1;
+
+  d.fillRect(18, dy + 15, 2, 4, bars >= 1 ? cActive : cDim);
+  d.fillRect(22, dy + 12, 2, 7, bars >= 2 ? cActive : cDim);
+  d.fillRect(26, dy + 9,  2, 10, bars >= 3 ? cActive : cDim);
+  d.fillRect(30, dy + 6,  2, 13, bars >= 4 ? cActive : cDim);
+
   d.setTextDatum(textdatum_t::top_left);
   d.setTextSize(1);
   d.setTextColor(0x3DFE);
-  String wifiStr = "Wi-Fi: ";
-  if (wifiRssi_ > -60) wifiStr += "[||||] ";
-  else if (wifiRssi_ > -75) wifiStr += "[|||.] ";
-  else wifiStr += "[||..] ";
-  wifiStr += String(wifiRssi_) + "dBm (" + (ipAddress_.length() ? ipAddress_ : "Desconectado") + ")";
-  d.drawString(wifiStr, dx + 12, dy + 10);
+  d.drawString(ipAddress_.length() ? ipAddress_ : "Sem IP", 36, dy + 8);
 
-  // Right tag: IA Gemini status dot
   d.setTextDatum(textdatum_t::top_right);
-  d.setTextColor(geminiConnected_ ? 0x07E0 : 0xF800); // Green or Red
-  d.drawString(geminiConnected_ ? "● IA PRONTA" : "○ IA OFF", dx + dw - 12, dy + 10);
+  if (iaStatus_ == 2) {
+    d.setTextColor(0x07E0); // Pure Green
+    d.drawString("● IA ON", dx + dw - 10, dy + 8);
+  } else if (iaStatus_ == 1) {
+    d.setTextColor(0xFFE0); // Yellow/Amber
+    d.drawString("◌ IA ...", dx + dw - 10, dy + 8);
+  } else {
+    d.setTextColor(0xF800); // Red
+    d.drawString("○ IA OFF", dx + dw - 10, dy + 8);
+  }
 
-  // Line 2: Battery % + Volts + Charging
+  // --- Line 2: Battery + Temp + Hum + ToF ---
+  // 1. Battery: outline + proportional fill + text
+  d.drawRect(18, dy + 25, 16, 9, TFT_WHITE);
+  d.fillRect(34, dy + 27, 2, 5, TFT_WHITE);
+  int fillW = constrain((static_cast<int>(batteryPct_) * 12) / 100, 0, 12);
+  uint16_t batCol = batteryPct_ > 20 ? 0x07E0 : 0xF800;
+  if (batteryCharging_) batCol = 0xFFE0;
+  if (fillW > 0) {
+    d.fillRect(20, dy + 27, fillW, 5, batCol);
+  }
   d.setTextDatum(textdatum_t::top_left);
-  d.setTextColor(batteryPct_ > 20 ? 0x07E0 : 0xFD40);
-  String batStr = "Bateria: " + String(batteryPct_) + "% (" + String(batteryVolts_, 2) + "V)";
-  if (batteryCharging_) batStr += " [CARREGANDO]";
-  d.drawString(batStr, dx + 12, dy + 32);
+  d.setTextColor(batCol);
+  d.drawString(String(batteryPct_) + "%", 39, dy + 26);
 
-  // Right: Temp & Humidity
-  d.setTextDatum(textdatum_t::top_right);
-  d.setTextColor(0xFFE0); // Yellow/Amber
-  char envBuf[32];
-  snprintf(envBuf, sizeof(envBuf), "%.1f C | %.0f%% UR", currentTemp_, currentHumidity_);
-  d.drawString(envBuf, dx + dw - 12, dy + 32);
+  // 2. Temperature: mini thermometer + value
+  d.fillCircle(80, dy + 33, 3, 0xFD40); // Bulb
+  d.fillRect(79, dy + 26, 3, 7, 0xFD40); // Stem
+  d.setTextColor(0xFD40);
+  char tBuf[16];
+  snprintf(tBuf, sizeof(tBuf), "%.1f C", currentTemp_);
+  d.drawString(tBuf, 86, dy + 26);
+
+  // 3. Humidity: mini water drop + value
+  d.fillCircle(142, dy + 32, 3, 0x3DFE); // Drop body
+  d.drawLine(140, dy + 32, 142, dy + 26, 0x3DFE);
+  d.drawLine(144, dy + 32, 142, dy + 26, 0x3DFE);
+  d.drawPixel(142, dy + 26, 0x3DFE);
+  d.setTextColor(0x3DFE);
+  char hBuf[16];
+  snprintf(hBuf, sizeof(hBuf), "%.0f%%", currentHumidity_);
+  d.drawString(hBuf, 148, dy + 26);
+
+  // 4. ToF: arrows <-> + value in cm
+  d.drawLine(198, dy + 30, 208, dy + 30, 0xFDA0);
+  d.drawLine(198, dy + 30, 201, dy + 28, 0xFDA0);
+  d.drawLine(198, dy + 30, 201, dy + 32, 0xFDA0);
+  d.drawLine(208, dy + 30, 205, dy + 28, 0xFDA0);
+  d.drawLine(208, dy + 30, 205, dy + 32, 0xFDA0);
+  d.setTextColor(0xFDA0);
+  char distBuf[16];
+  if (currentTofMm_ > 0 && currentTofMm_ <= 2000) {
+    snprintf(distBuf, sizeof(distBuf), "%dcm", currentTofMm_ / 10);
+  } else {
+    snprintf(distBuf, sizeof(distBuf), "--");
+  }
+  d.drawString(distBuf, 212, dy + 26);
 }
 
 void EmotionController::renderNeutral() {
