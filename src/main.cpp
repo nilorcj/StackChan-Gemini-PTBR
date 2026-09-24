@@ -862,6 +862,8 @@ void loop() {
   emotion.setMicActive(gemini.isRecording() && !realAudioSpeaking);
   emotion.setDoNotDisturb(gemini.isDoNotDisturb());
   emotion.setPhysicalMute(g_physical_mute);
+  emotion.setConversationArmed(gemini.isConversationArmed());
+  emotion.setTurnStateIdle(gemini.turnState() == GeminiLiveProbe::LiveTurnState::IDLE);
   emotion.loop();
 
   // Update LiveFeedsManager system idle state for Core 0 background worker

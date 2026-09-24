@@ -50,10 +50,133 @@ void EmotionController::begin() {
     Serial.println("Emotion: Partial sprites SRAM allocation failed, falling back to full-screen canvas");
   }
 
+  randomSeed(esp_random());
+  resetRestHumanization();
   setEmotion("neutral");
 }
 
+void EmotionController::resetRestHumanization() {
+  blinkState_ = BlinkState::OPEN;
+  nextBlinkDeadlineMs_ = 0;
+  blinkStageDeadlineMs_ = 0;
+  isBlinking_ = false;
+  targetPupilDx_ = 0;
+  targetPupilDy_ = 0;
+  currentPupilDx_ = 0.0f;
+  currentPupilDy_ = 0.0f;
+  nextPupilDriftMs_ = 0;
+}
+
+void EmotionController::updateBlinkState(uint32_t now) {
+  bool inRest = (mode_ == Mode::Neutral && turnStateIdle_ && !conversationArmed_ &&
+                 !isSpeaking_ && !micActive_ && !isLifted_ && !isShaken_ && !isDnd_ && !sleepDisplayOff_);
+  if (!inRest) {
+    if (blinkState_ != BlinkState::OPEN || isBlinking_) {
+      resetRestHumanization();
+    }
+    return;
+  }
+
+  bool prevBlinking = isBlinking_;
+
+  switch (blinkState_) {
+    case BlinkState::OPEN: {
+      isBlinking_ = false;
+      if (nextBlinkDeadlineMs_ == 0) {
+        nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(2500, 6001));
+      } else if (static_cast<int32_t>(now - nextBlinkDeadlineMs_) >= 0) {
+        blinkState_ = BlinkState::FIRST_CLOSED;
+        blinkStageDeadlineMs_ = now + 130;
+        isBlinking_ = true;
+      }
+      break;
+    }
+    case BlinkState::FIRST_CLOSED: {
+      isBlinking_ = true;
+      if (static_cast<int32_t>(now - blinkStageDeadlineMs_) >= 0) {
+        // ~15% chance of double blink
+        if (random(100) < 15) {
+          blinkState_ = BlinkState::DOUBLE_WAIT;
+          uint32_t pause = static_cast<uint32_t>(random(120, 221));
+          blinkStageDeadlineMs_ = now + pause;
+          isBlinking_ = false;
+        } else {
+          blinkState_ = BlinkState::OPEN;
+          nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(2500, 6001));
+          isBlinking_ = false;
+        }
+      }
+      break;
+    }
+    case BlinkState::DOUBLE_WAIT: {
+      isBlinking_ = false;
+      if (static_cast<int32_t>(now - blinkStageDeadlineMs_) >= 0) {
+        blinkState_ = BlinkState::SECOND_CLOSED;
+        blinkStageDeadlineMs_ = now + 110;
+        isBlinking_ = true;
+      }
+      break;
+    }
+    case BlinkState::SECOND_CLOSED: {
+      isBlinking_ = true;
+      if (static_cast<int32_t>(now - blinkStageDeadlineMs_) >= 0) {
+        blinkState_ = BlinkState::OPEN;
+        nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(2500, 6001));
+        isBlinking_ = false;
+      }
+      break;
+    }
+  }
+
+  if (isBlinking_ != prevBlinking) {
+    needsFaceRedraw_ = true;
+  }
+}
+
+void EmotionController::updatePupilDrift(uint32_t now) {
+  bool inRest = (mode_ == Mode::Neutral && turnStateIdle_ && !conversationArmed_ &&
+                 !isSpeaking_ && !micActive_ && !isLifted_ && !isShaken_ && !isDnd_ && !sleepDisplayOff_);
+  if (!inRest) {
+    targetPupilDx_ = 0;
+    targetPupilDy_ = 0;
+    currentPupilDx_ = 0.0f;
+    currentPupilDy_ = 0.0f;
+    nextPupilDriftMs_ = 0;
+    return;
+  }
+
+  if (nextPupilDriftMs_ == 0) {
+    nextPupilDriftMs_ = now + static_cast<uint32_t>(random(1500, 4001));
+  } else if (static_cast<int32_t>(now - nextPupilDriftMs_) >= 0) {
+    // 35% chance to center (0,0), 65% chance to drift subtler (-4..+4, -2..+2)
+    if (random(100) < 35) {
+      targetPupilDx_ = 0;
+      targetPupilDy_ = 0;
+    } else {
+      targetPupilDx_ = static_cast<int>(random(-4, 5));
+      targetPupilDy_ = static_cast<int>(random(-2, 3));
+    }
+    nextPupilDriftMs_ = now + static_cast<uint32_t>(random(1500, 4001));
+  }
+
+  float diffX = static_cast<float>(targetPupilDx_) - currentPupilDx_;
+  float diffY = static_cast<float>(targetPupilDy_) - currentPupilDy_;
+
+  if (fabs(diffX) < 0.08f) {
+    currentPupilDx_ = static_cast<float>(targetPupilDx_);
+  } else {
+    currentPupilDx_ += diffX * 0.20f;
+  }
+
+  if (fabs(diffY) < 0.08f) {
+    currentPupilDy_ = static_cast<float>(targetPupilDy_);
+  } else {
+    currentPupilDy_ += diffY * 0.20f;
+  }
+}
+
 bool EmotionController::setEmotion(const String& emotion) {
+  resetRestHumanization();
   String normalized;
   Mode next = parseMode(emotion, normalized);
   Mode previous = mode_;
@@ -88,6 +211,7 @@ bool EmotionController::setEmotion(const String& emotion) {
 void EmotionController::setIsSpeaking(bool speaking) {
   if (isSpeaking_ == speaking) return;
   isSpeaking_ = speaking;
+  if (isSpeaking_) resetRestHumanization();
   Serial.printf("Face: mouth %s (reason: speaker playback %s)\n",
                 speaking ? "TALKING" : "RESTING",
                 speaking ? "active" : "idle");
@@ -105,6 +229,10 @@ void EmotionController::loop() {
   if (mode_ == Mode::Sleep && !sleepDisplayOff_ && sleepVisualOffDue()) {
     enterSleepDisplayOff(externalPower);
   }
+
+  // Update rest humanization (organic blink & pupil drift)
+  updateBlinkState(now);
+  updatePupilDrift(now);
 
   uint32_t faceInterval = isSpeaking_ ? kSpeakingFaceIntervalMs : kFaceIntervalMs;
   if (!sleepDisplayOff_ && (needsFaceRedraw_ || lastFaceMs_ == 0 || now - lastFaceMs_ >= faceInterval)) {
@@ -249,7 +377,7 @@ EmotionController::FaceState EmotionController::computeFaceState() const {
   s.irisColor = 0x3DFE;   // Sky blue
   s.glowAccent = 0x037A; // Deep blue
   s.blushColor = 0xF9F2; // Radiant pink
-  s.pupilDx = triWave(frame_ * 3, 5);
+  s.pupilDx = 0;
   s.pupilDy = 0;
   s.closed = false;
 
@@ -296,8 +424,19 @@ EmotionController::FaceState EmotionController::computeFaceState() const {
     s.irisColor = 0x1968;
     s.glowAccent = 0x08C4;
   } else {
-    // Neutral soft blink
-    s.closed = ((frame_ / 55) % 18) == 0;
+    // Mode::Neutral
+    bool inRest = (mode_ == Mode::Neutral && turnStateIdle_ && !conversationArmed_ &&
+                   !isSpeaking_ && !micActive_ && !isLifted_ && !isShaken_ && !isDnd_ && !sleepDisplayOff_);
+    if (inRest) {
+      s.closed = isBlinking_;
+      // Integer rounding ensures eyesDirty only triggers when drawn integer pixel actually changes
+      s.pupilDx = static_cast<int>(roundf(currentPupilDx_));
+      s.pupilDy = static_cast<int>(roundf(currentPupilDy_));
+    } else {
+      s.closed = false;
+      s.pupilDx = 0;
+      s.pupilDy = 0;
+    }
   }
 
   s.talkShape = (frame_ * 2) % 8;

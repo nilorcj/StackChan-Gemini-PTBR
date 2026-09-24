@@ -16,6 +16,7 @@ class EmotionController {
   void setLifted(bool lifted) {
     if (isLifted_ != lifted) {
       isLifted_ = lifted;
+      if (isLifted_) resetRestHumanization();
       forceFullRedraw_ = true;
       needsFaceRedraw_ = true;
     }
@@ -24,6 +25,7 @@ class EmotionController {
   void setShaken(bool shaken) {
     if (isShaken_ != shaken) {
       isShaken_ = shaken;
+      if (isShaken_) resetRestHumanization();
       forceFullRedraw_ = true;
       needsFaceRedraw_ = true;
     }
@@ -32,6 +34,7 @@ class EmotionController {
   void setProlongedPetting(bool active) {
     if (isProlongedPetting_ != active) {
       isProlongedPetting_ = active;
+      if (isProlongedPetting_) resetRestHumanization();
       forceFullRedraw_ = true;
       needsFaceRedraw_ = true;
     }
@@ -40,6 +43,7 @@ class EmotionController {
   void setDoNotDisturb(bool dnd) {
     if (isDnd_ != dnd) {
       isDnd_ = dnd;
+      if (isDnd_) resetRestHumanization();
       forceFullRedraw_ = true;
       needsFaceRedraw_ = true;
     }
@@ -48,6 +52,7 @@ class EmotionController {
   void setMicActive(bool active) {
     if (micActive_ != active) {
       micActive_ = active;
+      if (micActive_) resetRestHumanization();
       forceFullRedraw_ = true;
       needsFaceRedraw_ = true;
     }
@@ -63,6 +68,22 @@ class EmotionController {
     }
   }
   bool isPhysicalMute() const { return physicalMute_; }
+
+  void setConversationArmed(bool armed) {
+    if (conversationArmed_ != armed) {
+      conversationArmed_ = armed;
+      if (conversationArmed_) resetRestHumanization();
+    }
+  }
+  bool isConversationArmed() const { return conversationArmed_; }
+
+  void setTurnStateIdle(bool idle) {
+    if (turnStateIdle_ != idle) {
+      turnStateIdle_ = idle;
+      if (!turnStateIdle_) resetRestHumanization();
+    }
+  }
+  bool isTurnStateIdle() const { return turnStateIdle_; }
 
   void showQuickStatus(uint32_t durationMs = 4000) {
     quickStatusUntilMs_ = millis() + durationMs;
@@ -223,6 +244,31 @@ class EmotionController {
   void refresh();
   void drawLabel();
   void drawQuickStatusDrawer(M5Canvas& d);
+
+  // Rest humanization state machine (Mode::Neutral, IDLE, disarmed)
+  enum class BlinkState : uint8_t {
+    OPEN = 0,
+    FIRST_CLOSED,
+    DOUBLE_WAIT,
+    SECOND_CLOSED
+  };
+  BlinkState blinkState_ = BlinkState::OPEN;
+  uint32_t nextBlinkDeadlineMs_ = 0;
+  uint32_t blinkStageDeadlineMs_ = 0;
+  bool isBlinking_ = false;
+
+  float currentPupilDx_ = 0.0f;
+  float currentPupilDy_ = 0.0f;
+  int targetPupilDx_ = 0;
+  int targetPupilDy_ = 0;
+  uint32_t nextPupilDriftMs_ = 0;
+
+  bool conversationArmed_ = false;
+  bool turnStateIdle_ = true;
+
+  void updateBlinkState(uint32_t now);
+  void updatePupilDrift(uint32_t now);
+  void resetRestHumanization();
 
   FaceState computeFaceState() const;
   void renderFace();
