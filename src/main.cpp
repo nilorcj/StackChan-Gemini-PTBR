@@ -272,7 +272,7 @@ static void blackoutExternalLightsForPowerOff() {
   M5StackChan.showRgbColor(0, 0, 0);
 }
 
-static bool connectWifiFromConfig(const ConfigManager& cfg) {
+static bool startWifiAsync(const ConfigManager& cfg) {
   const auto& c = cfg.config();
   if (!c.wifiEnabled) {
     Serial.println("WiFi: disabled");
@@ -283,36 +283,14 @@ static bool connectWifiFromConfig(const ConfigManager& cfg) {
     Serial.println("WiFi: missing ssid or password");
     return false;
   }
-  Serial.println("WiFi: starting station mode");
+  Serial.printf("WiFi: initiating station connection (async) ssid=%s\n", c.wifiSsid.c_str());
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  // DHCP on some routers/boots can leave DNS unusable even though the ESP is
-  // reachable on the LAN. Gemini Live connect then fails at hostByName() and
-  // the robot drops into error before audio starts. Keep DHCP addressing, but
-  // pin reliable resolvers for outbound Gemini/gateway connections.
+  // Keep DHCP addressing, but pin reliable resolvers for outbound Gemini/gateway connections.
   WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE,
               IPAddress(1, 1, 1, 1), IPAddress(8, 8, 8, 8));
   WiFi.begin(c.wifiSsid.c_str(), password.c_str());
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-    delay(250);
-    M5StackChan.update();
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFi.setSleep(false); // Disable WiFi power save to eliminate packet jitter on audio stream
-    WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(),
-                IPAddress(1, 1, 1, 1), IPAddress(8, 8, 8, 8));
-    Serial.print("WiFi: connected ip=");
-    Serial.print(WiFi.localIP());
-    Serial.print(" dns=");
-    Serial.println(WiFi.dnsIP());
-    drawStatus(WiFi.localIP().toString().c_str());
-    return true;
-  }
-  Serial.println("WiFi: connect timeout");
-  WiFi.disconnect(true, false);
-  WiFi.mode(WIFI_OFF);
-  return false;
+  return true;
 }
 
 static bool shouldStartSetupAccessPoint(const ConfigManager& cfg, bool sdConfigExists) {
@@ -383,56 +361,109 @@ static bool readLtr553Als(uint16_t& alsAvg) {
   return true;
 }
 
-static void showBootDiagnosticScreen(uint32_t durationMs = 10000) {
-  Serial.printf("BootDiag: displaying %u ms diagnostic screen (touch screen to skip)...\n", static_cast<unsigned>(durationMs));
+static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConfigured = false) {
+  Serial.printf("BootDashboard: displaying %u ms dashboard screen (touch screen to skip)...\n", static_cast<unsigned>(durationMs));
   auto& display = M5StackChan.Display();
   display.fillScreen(TFT_BLACK);
 
-  // Header Bar
-  display.fillRect(0, 0, 320, 24, 0x0112); // Deep Navy
-  display.drawLine(0, 24, 320, 24, 0x037A);
-  display.setTextDatum(textdatum_t::middle_left);
-  display.setTextSize(1);
+  // 1. Header (Y=0..34)
+  display.setTextDatum(textdatum_t::middle_center);
+  display.setTextSize(2);
   display.setTextColor(0x3DFE); // Electric Cyan
-  display.drawString("PIX // DIAGNOSTICO DE SISTEMA", 8, 12);
-  display.setTextDatum(textdatum_t::middle_right);
-  display.setTextColor(0xFE44); // Amber/Gold
-  display.drawString("M5 CORES3", 312, 12);
+  display.drawString("PIX", 160, 14);
+  display.setTextSize(1);
+  display.setTextColor(0x9DF8); // Soft Lavender
+  display.drawString("Inicializando sistema...", 160, 28);
 
-  // Panel 1: Conectividade (y: 28, h: 52)
-  display.fillRoundRect(4, 28, 312, 52, 5, 0x0841);
-  display.drawRoundRect(4, 28, 312, 52, 5, 0x1948);
+  // 2. Static Cards Frames
+  // Row 1 (Y=36..96, H=60, r=8): Wi-Fi (12, 142) and IA (166, 142)
+  display.fillRoundRect(12, 36, 142, 60, 8, 0x0841);
+  display.drawRoundRect(12, 36, 142, 60, 8, 0x1948);
+  display.setTextDatum(textdatum_t::top_left);
+  display.setTextSize(1);
+  display.setTextColor(0x3DFE);
+  display.drawString("WIFI", 22, 42);
 
-  // Panel 2: Sensores PaHub (y: 84, h: 62)
-  display.fillRoundRect(4, 84, 312, 62, 5, 0x0841);
-  display.drawRoundRect(4, 84, 312, 62, 5, 0x1948);
+  display.fillRoundRect(166, 36, 142, 60, 8, 0x0841);
+  display.drawRoundRect(166, 36, 142, 60, 8, 0x1948);
+  display.setTextDatum(textdatum_t::top_left);
+  display.setTextSize(1);
+  display.setTextColor(0x3DFE);
+  display.drawString("IA", 176, 42);
 
-  // Panel 3: Hardware CoreS3 & Bateria (y: 150, h: 48)
-  display.fillRoundRect(4, 150, 312, 48, 5, 0x0841);
-  display.drawRoundRect(4, 150, 312, 48, 5, 0x1948);
+  // Row 2 (Y=102..156, H=54, r=8): BAT (12, 92), TEMP (114, 92), UR (216, 92)
+  display.fillRoundRect(12, 102, 92, 54, 8, 0x0841);
+  display.drawRoundRect(12, 102, 92, 54, 8, 0x1948);
+  display.setTextDatum(textdatum_t::top_center);
+  display.drawString("BAT", 58, 106);
+
+  display.fillRoundRect(114, 102, 92, 54, 8, 0x0841);
+  display.drawRoundRect(114, 102, 92, 54, 8, 0x1948);
+  display.setTextDatum(textdatum_t::top_center);
+  display.drawString("TEMP", 160, 106);
+
+  display.fillRoundRect(216, 102, 92, 54, 8, 0x0841);
+  display.drawRoundRect(216, 102, 92, 54, 8, 0x1948);
+  display.setTextDatum(textdatum_t::top_center);
+  display.drawString("UR", 262, 106);
+
+  // Row 3 (Y=162..188, H=26, r=13): ToF Pill (36, 248)
+  display.fillRoundRect(36, 162, 248, 26, 13, 0x0841);
+  display.drawRoundRect(36, 162, 248, 26, 13, 0x1948);
+
+  // Footer Progress Bar Frame (X=16, Y=216, W=288, H=12, r=6)
+  display.drawRoundRect(16, 216, 288, 12, 6, 0x3DFE);
 
   uint32_t startMs = millis();
   uint32_t lastSensorUpdateMs = 0;
+  uint32_t lastDisplayUpdateMs = 0;
   uint16_t distMm = 0;
   UnitPaHubManager::EnvData env;
+  bool wifiConnectedBefore = false;
+  bool geminiConnectTriggered = false;
 
   while (millis() - startMs < durationMs) {
     M5StackChan.update();
     uint32_t now = millis();
     uint32_t elapsed = now - startMs;
-    uint32_t remaining = (elapsed < durationMs) ? (durationMs - elapsed) : 0;
-    uint32_t remainingSec = (remaining + 999) / 1000;
+    uint32_t elapsedSec = elapsed / 1000;
+    uint32_t totalSec = durationMs / 1000;
 
-    // Check touch to skip (ignore dirty initial touch / noise during first 1500ms)
+    // Check touch skip (after 800ms debounce to ignore any boot touch noise)
     auto t = M5.Touch.getDetail();
-    if (elapsed > 1500 && t.wasClicked()) {
-      Serial.println("BootDiag: skipped by user touch click");
+    if (elapsed > 800 && t.wasClicked()) {
+      Serial.println("BootDashboard: skipped by user touch click");
       unitPaHub.click();
       break;
     }
 
-    // Refresh live sensor values every 250ms
-    if (now - lastSensorUpdateMs >= 250) {
+    // Handle Wi-Fi connection concurrently
+    bool isWifi = (WiFi.status() == WL_CONNECTED);
+    if (!wifiConnectedBefore && isWifi) {
+      wifiConnectedBefore = true;
+      WiFi.setSleep(false);
+      WiFi.config(WiFi.localIP(), WiFi.gatewayIP(), WiFi.subnetMask(),
+                  IPAddress(1, 1, 1, 1), IPAddress(8, 8, 8, 8));
+      Serial.printf("WiFi: connected during boot screen! ip=%s dns=%s\n",
+                    WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
+      configTime(-3 * 3600, 0, "a.st1.ntp.br", "pool.ntp.org", "time.nist.gov");
+      liveFeeds.triggerBootPrefetch();
+      webConfig.begin(configManager.webConfig());
+      if (geminiConfigured && !geminiConnectTriggered) {
+        geminiConnectTriggered = true;
+        Serial.println("Gemini: connecting WebSocket concurrently during boot screen...");
+        gemini.connect();
+      }
+    }
+
+    // Keep WebSocket and WebConfig active concurrently during boot screen
+    if (isWifi) {
+      gemini.loop();
+      webConfig.loop();
+    }
+
+    // Refresh sensor data every 200 ms
+    if (now - lastSensorUpdateMs >= 200) {
       lastSensorUpdateMs = now;
       if (unitPaHub.isFound()) {
         unitPaHub.readSensors(distMm, env);
@@ -442,126 +473,157 @@ static void showBootDiagnosticScreen(uint32_t durationMs = 10000) {
           g_latest_pressure = env.pressure;
         }
       }
+    }
 
-      // Panel 1: Wi-Fi & Gemini Live
-      display.setTextDatum(textdatum_t::middle_left);
+    // Refresh dynamic UI elements every 100 ms
+    if (now - lastDisplayUpdateMs >= 100) {
+      lastDisplayUpdateMs = now;
+
+      // 1. Wi-Fi Card Dynamic Elements
+      display.fillRect(20, 56, 128, 36, 0x0841);
+      display.fillRect(58, 42, 90, 14, 0x0841);
+
+      // Signal Bars
+      uint16_t barColor = isWifi ? 0x07E0 : 0x4208;
+      display.fillRect(24, 76, 3, 6, barColor);
+      display.fillRect(29, 72, 3, 10, barColor);
+      display.fillRect(34, 68, 3, 14, barColor);
+      display.fillRect(39, 64, 3, 18, barColor);
+
+      display.setTextDatum(textdatum_t::top_left);
       display.setTextSize(1);
-      display.fillRect(10, 32, 300, 20, 0x0841);
-      if (WiFi.status() == WL_CONNECTED) {
-        display.setTextColor(0x07E0); // Green
-        display.drawString("[WI-FI OK] ", 10, 42);
+      if (isWifi) {
+        display.setTextColor(0x07E0);
+        display.drawString("OK", 62, 42);
         display.setTextColor(TFT_WHITE);
-        String wifiInfo = WiFi.SSID() + " (" + String(WiFi.RSSI()) + "dBm) " + WiFi.localIP().toString();
-        display.drawString(wifiInfo.c_str(), 80, 42);
+        display.drawString(WiFi.localIP().toString().c_str(), 48, 66);
       } else {
-        display.setTextColor(0xF800); // Red
-        display.drawString("[WI-FI OFF] ", 10, 42);
-        display.setTextColor(0xFDA0);
-        display.drawString("Desconectado / Modo Setup AP", 88, 42);
+        display.setTextColor(0xFFE0);
+        display.drawString("AGUARDANDO", 62, 42);
+        display.setTextColor(0x8410);
+        display.drawString("Conectando...", 48, 66);
       }
 
-      display.fillRect(10, 54, 300, 20, 0x0841);
-      if (configManager.hasGeminiApiKey() && WiFi.status() == WL_CONNECTED) {
+      // 2. IA Gemini Card Dynamic Elements
+      display.fillRect(174, 54, 130, 38, 0x0841);
+      display.fillRect(198, 42, 106, 14, 0x0841);
+
+      if (geminiConfigured && gemini.isReady()) {
+        display.drawCircle(186, 68, 8, 0x03E0);
+        display.fillCircle(186, 68, 5, 0x07E0);
+        display.fillCircle(186, 68, 2, TFT_WHITE);
         display.setTextColor(0x07E0);
-        display.drawString("[GEMINI LIVE OK] ", 10, 64);
-        String modelName = configManager.config().geminiModel;
-        if (modelName.startsWith("models/")) modelName = modelName.substring(7);
-        display.drawString((modelName + " (WS Pronto)").c_str(), 124, 64);
-      } else {
-        display.setTextColor(0xFDA0);
-        display.drawString("[GEMINI LIVE --] ", 10, 64);
+        display.drawString("PRONTA", 204, 42);
         display.setTextColor(TFT_WHITE);
-        display.drawString("Sem Chave API ou Wi-Fi Desconectado", 124, 64);
-      }
-
-      // Panel 2: PaHub, TOF 90 (Ch 0), Unit ENV (Ch 1)
-      display.fillRect(10, 88, 300, 26, 0x0841);
-      if (unitPaHub.isFound()) {
-        display.setTextColor(0x07E0);
-        char hubStr[32];
-        snprintf(hubStr, sizeof(hubStr), "[PaHub 0x%02X OK]", unitPaHub.getAddress());
-        display.drawString(hubStr, 10, 101);
+        String mName = configManager.config().geminiModel;
+        if (mName.startsWith("models/")) mName = mName.substring(7);
+        if (mName.length() > 11) mName = mName.substring(0, 11);
+        display.drawString(mName.c_str(), 202, 66);
+      } else if (isWifi && geminiConfigured) {
+        display.drawCircle(186, 68, 8, 0x8400);
+        display.fillCircle(186, 68, 5, 0xFFE0);
+        display.fillCircle(186, 68, 2, TFT_WHITE);
+        display.setTextColor(0xFFE0);
+        display.drawString("CONECTANDO", 204, 42);
+        display.setTextColor(0x8410);
+        display.drawString("Live WS...", 202, 66);
       } else {
+        display.drawCircle(186, 68, 8, 0x4000);
+        display.fillCircle(186, 68, 5, 0xF800);
+        display.fillCircle(186, 68, 2, 0x8000);
         display.setTextColor(0xF800);
-        display.drawString("[PaHub AUSENTE]", 10, 101);
+        display.drawString("OFFLINE", 204, 42);
+        display.setTextColor(0x8410);
+        display.drawString("Desconectado", 202, 66);
       }
 
-      if (unitPaHub.isTOFReady()) {
-        display.setTextColor(0x07E0);
-        char tofStr[40];
-        if (distMm > 0) {
-          snprintf(tofStr, sizeof(tofStr), "[TOF90 OK] %u cm (%u mm)", distMm / 10, distMm);
-        } else {
-          snprintf(tofStr, sizeof(tofStr), "[TOF90 OK] Dist: --");
-        }
-        display.drawString(tofStr, 134, 101);
-      } else {
-        display.setTextColor(0xF800);
-        display.drawString("[TOF90 AUSENTE]", 134, 101);
-      }
-
-      display.fillRect(10, 116, 300, 24, 0x0841);
-      if (unitPaHub.isENVReady()) {
-        display.setTextColor(0x07E0);
-        display.drawString("[ENV OK] ", 10, 128);
-        display.setTextColor(0xFFE0); // Yellow
-        char envStr[64];
-        snprintf(envStr, sizeof(envStr), "%.1f C | %.0f%% UR | %.0f hPa", env.temperature, env.humidity, env.pressure);
-        display.drawString(envStr, 70, 128);
-      } else {
-        display.setTextColor(0xF800);
-        display.drawString("[ENV AUSENTE] Canal 1 sem resposta", 10, 128);
-      }
-
-      // Panel 3: Hardware CoreS3 & Battery
-      display.fillRect(10, 154, 300, 20, 0x0841);
-      display.setTextColor(M5.Imu.isEnabled() ? 0x07E0 : 0xF800);
-      display.drawString(M5.Imu.isEnabled() ? "[IMU OK]" : "[IMU ERR]", 10, 164);
-      display.setTextColor(SD.cardType() != CARD_NONE ? 0x07E0 : 0xF800);
-      display.drawString(SD.cardType() != CARD_NONE ? "[SD OK]" : "[SD --]", 76, 164);
-      display.setTextColor(0x07E0);
-      display.drawString("[TOUCH OK]", 132, 164);
-
-      uint16_t alsVal = 0;
-      bool alsOk = readLtr553Als(alsVal);
-      display.setTextColor(alsOk ? 0x07E0 : 0xFDA0);
-      char alsStr[32];
-      snprintf(alsStr, sizeof(alsStr), "[LTR %u lx]", alsVal);
-      display.drawString(alsStr, 214, 164);
-
-      display.fillRect(10, 174, 300, 20, 0x0841);
+      // 3. BAT Card Dynamic Elements
+      display.fillRect(16, 120, 84, 32, 0x0841);
       float batVolts = M5StackChan.getBatteryVoltage();
       int batLevel = M5.Power.getBatteryLevel();
       uint8_t batPct = (batLevel >= 0) ? static_cast<uint8_t>(batLevel) :
                        (batVolts > 3.4f ? static_cast<uint8_t>(constrain((batVolts - 3.4f) / 0.8f * 100.0f, 0.0f, 100.0f)) : 0);
-      display.setTextColor(batPct > 20 ? 0x07E0 : 0xFD40);
-      char batStr[48];
-      bool charging = (M5StackChan.getBatteryCurrent() < -0.01f) || M5.Power.isCharging();
-      snprintf(batStr, sizeof(batStr), "Bateria: %u%% (%.2fV)%s", batPct, batVolts, charging ? " [CARREGANDO]" : "");
-      display.drawString(batStr, 10, 184);
+      uint16_t batColor = (batPct > 40) ? 0x07E0 : ((batPct > 20) ? 0xFFE0 : 0xF800);
+      display.drawRect(20, 126, 20, 12, TFT_WHITE);
+      display.fillRect(40, 129, 2, 6, TFT_WHITE);
+      int fillW = constrain(static_cast<int>((batPct * 16) / 100), 0, 16);
+      if (fillW > 0) display.fillRect(22, 128, fillW, 8, batColor);
+      char bStr[12];
+      snprintf(bStr, sizeof(bStr), "%u%%", batPct);
+      display.setTextDatum(textdatum_t::middle_left);
+      display.setTextColor(batColor);
+      display.drawString(bStr, 48, 132);
+
+      // 4. TEMP Card Dynamic Elements
+      display.fillRect(118, 120, 84, 32, 0x0841);
+      display.drawRoundRect(124, 124, 4, 10, 1, TFT_WHITE);
+      display.drawCircle(126, 136, 4, TFT_WHITE);
+      display.fillCircle(126, 136, 3, 0xFD40);
+      display.fillRect(125, 127, 2, 6, 0xFD40);
+      char tStr[16];
+      if (unitPaHub.isENVReady() && env.valid) {
+        snprintf(tStr, sizeof(tStr), "%.1f C", env.temperature);
+      } else {
+        snprintf(tStr, sizeof(tStr), "-- C");
+      }
+      display.setTextDatum(textdatum_t::middle_left);
+      display.setTextColor(TFT_WHITE);
+      display.drawString(tStr, 136, 132);
+
+      // 5. UR Card Dynamic Elements
+      display.fillRect(220, 120, 84, 32, 0x0841);
+      display.fillCircle(228, 135, 4, 0x05BF);
+      display.fillTriangle(224, 134, 232, 134, 228, 125, 0x05BF);
+      char hStr[16];
+      if (unitPaHub.isENVReady() && env.valid) {
+        snprintf(hStr, sizeof(hStr), "%.0f%%", env.humidity);
+      } else {
+        snprintf(hStr, sizeof(hStr), "--%%");
+      }
+      display.setTextDatum(textdatum_t::middle_left);
+      display.setTextColor(TFT_WHITE);
+      display.drawString(hStr, 240, 132);
+
+      // 6. ToF Pill Dynamic Elements (Double Arrow Graphic + cm)
+      display.fillRect(48, 166, 224, 18, 0x0841);
+      if (unitPaHub.isTOFReady()) {
+        display.fillTriangle(106, 171, 106, 179, 100, 175, 0x07E0);
+        display.fillTriangle(144, 171, 144, 179, 150, 175, 0x07E0);
+        display.drawLine(103, 175, 147, 175, 0x07E0);
+        char distBuf[16];
+        if (distMm > 0) {
+          snprintf(distBuf, sizeof(distBuf), "%u cm", distMm / 10);
+        } else {
+          snprintf(distBuf, sizeof(distBuf), "-- cm");
+        }
+        display.setTextDatum(textdatum_t::middle_left);
+        display.setTextColor(0x07E0);
+        display.drawString(distBuf, 160, 175);
+      } else {
+        display.setTextDatum(textdatum_t::middle_center);
+        display.setTextColor(0x8410);
+        display.drawString("Sensor ToF AUSENTE", 160, 175);
+      }
+
+      // 7. Footer Countdown & Text
+      display.fillRect(20, 196, 280, 14, TFT_BLACK);
+      display.setTextDatum(textdatum_t::middle_center);
+      display.setTextColor(0x9DF8);
+      char footerStr[48];
+      snprintf(footerStr, sizeof(footerStr), "%u / %u s    Toque para continuar", elapsedSec, totalSec);
+      display.drawString(footerStr, 160, 203);
+
+      // 8. Progress Bar Fill
+      int barW = constrain(static_cast<int>((elapsed * 282) / durationMs), 0, 282);
+      if (barW > 0) display.fillRoundRect(19, 219, barW, 6, 3, 0x07E0);
     }
 
-    // Countdown and Progress
-    display.setTextDatum(textdatum_t::middle_center);
-    display.setTextSize(1);
-    display.setTextColor(0xFFE0); // Yellow
-    char cdStr[48];
-    snprintf(cdStr, sizeof(cdStr), "Iniciando Pix em %u s... [Toque p/ pular]", static_cast<unsigned>(remainingSec));
-    display.fillRect(20, 204, 280, 16, TFT_BLACK);
-    display.drawString(cdStr, 160, 212);
-
-    // Progress Bar
-    display.drawRoundRect(8, 222, 304, 12, 4, 0x3DFE);
-    int barW = (elapsed * 300) / durationMs;
-    if (barW > 300) barW = 300;
-    display.fillRoundRect(10, 224, barW, 8, 2, 0x07E0);
-
-    delay(40);
+    delay(20);
   }
 
   // Clear before handing off to procedural face
   display.fillScreen(TFT_BLACK);
-  Serial.println("BootDiag: diagnostic screen finished.");
+  Serial.println("BootDashboard: dashboard screen finished.");
 }
 
 void setup() {
@@ -657,92 +719,66 @@ void setup() {
     Serial.printf("Audio: speaker_volume=%u mic_magnification=8 mic_noise_filter=0 (Phase 3 operational)\n",
                   static_cast<unsigned>(g_speaker_volume));
     toolGateway.begin(configManager.gatewayConfig());
-    bool wifi_ok = connectWifiFromConfig(configManager);
+
+    // 1. Pre-configure Gemini live probe session parameters
+    const auto& cfg = configManager.config();
+    bool geminiConfigured = false;
+    if (cfg.geminiEnabled && configManager.hasGeminiApiKey()) {
+      Serial.println("Gemini: configuring live session...");
+      gemini.setModel(cfg.geminiModel);
+      gemini.setVoiceName(cfg.geminiVoice);
+      gemini.setVadConfig(cfg.vadPrefixPaddingMs, cfg.vadSilenceDurationMs,
+                          cfg.vadStartSensitivityHigh, // Patch 4 audio stable: START_SENSITIVITY_HIGH
+                          cfg.vadEndSensitivityLow,
+                          cfg.vadTurnIncludesAllInput);
+      gemini.setSystemPrompt(cfg.systemPrompt);
+      gemini.setPersonaPrompt(cfg.personaPrompt);
+      geminiConfigured = gemini.begin(configManager.readGeminiApiKey().c_str());
+      Serial.printf("Gemini: begin %s\n", geminiConfigured ? "ok" : "failed");
+    }
+
+    // 2. Start Wi-Fi connection asynchronously in background
+    bool wifiStarted = startWifiAsync(configManager);
+
+    // 3. Show Graphical Boot Dashboard Screen (up to 15s max, concurrent non-blocking connection)
+    showBootDashboardScreen(15000, geminiConfigured);
+
+    // 4. Post-boot screen finalization
+    bool wifi_ok = (WiFi.status() == WL_CONNECTED);
     if (wifi_ok) {
-      // Sync clock via NTP for Brasilia time (UTC - 3h)
-      configTime(-3 * 3600, 0, "a.st1.ntp.br", "pool.ntp.org", "time.nist.gov");
-      Serial.println("NTP: time synchronization initiated for Brasilia (UTC-3).");
-      struct tm timeinfo;
-      if (getLocalTime(&timeinfo, 2000)) {
-        Serial.printf("NTP: synchronized successfully (%04d-%02d-%02d %02d:%02d:%02d)\n",
-                      timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                      timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      liveFeeds.waitForBootPrefetch(2000);
+      Serial.println("[BOOT_PREFETCH] Gemini Live released");
+      if (geminiConfigured && gemini.isReady()) {
+        emotion.setEmotion("happy");
+        g_emotion_override_until_ms = millis() + 3000;
+        Serial.println("Boot: playing wake droid chirp...");
+        playWakeDroidChirp();
+        uint32_t chirpWait = 0;
+        while (M5.Speaker.isPlaying() && chirpWait < 350) {
+          delay(10);
+          chirpWait += 10;
+        }
+        Serial.println("Boot: Gemini ready. Conversation starts DISARMED -> wave or touch to talk");
       } else {
-        Serial.println("NTP: sync timeout (proceeding with prefetch).");
+        emotion.setEmotion("neutral");
       }
-      liveFeeds.triggerBootPrefetch();
-    }
-    bool setup_ap_ok = false;
-    if (!wifi_ok && shouldStartSetupAccessPoint(configManager, runtime_config_exists)) {
-      setup_ap_ok = startSetupAccessPoint(configManager);
-    }
-    if (wifi_ok || setup_ap_ok) {
-      if (wifi_ok) {
-        webConfig.begin(configManager.webConfig());
-      } else {
+    } else {
+      bool setup_ap_ok = false;
+      if (shouldStartSetupAccessPoint(configManager, runtime_config_exists)) {
+        setup_ap_ok = startSetupAccessPoint(configManager);
+      }
+      if (setup_ap_ok) {
         WebConfigServer::Config setupWeb;
         setupWeb.enabled = true;
         setupWeb.port = 80;
         setupWeb.robotId = configManager.config().robotId.c_str();
         webConfig.begin(setupWeb);
-      }
-      // 10-second Boot Diagnostic Screen showing Wi-Fi, Gemini, PaHub 0x77, TOF90, ENV, and Battery
-      showBootDiagnosticScreen(10000);
-
-      // Ensure Core 0 boot prefetch completed (or wait up to 8s timeout) before releasing Gemini Live
-      if (wifi_ok) {
-        liveFeeds.waitForBootPrefetch(8000);
-      }
-      Serial.println("[BOOT_PREFETCH] Gemini Live released");
-
-      const auto& cfg = configManager.config();
-      if (wifi_ok && cfg.geminiEnabled) {
-        if (configManager.hasGeminiApiKey()) {
-          Serial.println("Gemini: configuring live session...");
-          gemini.setModel(cfg.geminiModel);
-          gemini.setVoiceName(cfg.geminiVoice);
-          gemini.setVadConfig(cfg.vadPrefixPaddingMs, cfg.vadSilenceDurationMs,
-                              cfg.vadStartSensitivityHigh, // Patch 4 audio stable: START_SENSITIVITY_HIGH
-                              cfg.vadEndSensitivityLow,
-                              cfg.vadTurnIncludesAllInput);
-          gemini.setSystemPrompt(cfg.systemPrompt);
-          gemini.setPersonaPrompt(cfg.personaPrompt);
-          bool gemini_ok = gemini.begin(configManager.readGeminiApiKey().c_str());
-          if (gemini_ok) {
-            emotion.setEmotion("happy");
-            g_emotion_override_until_ms = millis() + 3000;
-            Serial.println("Boot: playing wake droid chirp...");
-            playWakeDroidChirp();
-            uint32_t chirpWait = 0;
-            while (M5.Speaker.isPlaying() && chirpWait < 350) {
-              delay(10);
-              chirpWait += 10;
-            }
-            Serial.println("Boot: conversation starts DISARMED. Connecting WebSocket in background...");
-            gemini.connect();
-            Serial.println("Gemini: connected on boot (DISARMED) -> wave or touch to talk");
-          } else {
-            Serial.println("Gemini: init failed");
-            emotion.setEmotion("neutral");
-          }
-        } else {
-          Serial.println("Gemini: enabled but api key missing");
-          emotion.setEmotion("neutral");
-        }
-      } else if (wifi_ok) {
-        Serial.println("Gemini: disabled");
-        emotion.setEmotion("neutral");
       } else {
-        Serial.println("Gemini: skipped in setup access point mode");
-        emotion.setEmotion("neutral");
+        WebConfigServer::Config webOff;
+        webOff.enabled = false;
+        webOff.robotId = configManager.config().robotId.c_str();
+        webConfig.begin(webOff);
       }
-    } else {
-      WebConfigServer::Config webOff;
-      webOff.enabled = false;
-      webOff.robotId = configManager.config().robotId.c_str();
-      webConfig.begin(webOff);
-      Serial.println("Gemini: skipped because WiFi is not connected");
-      showBootDiagnosticScreen(10000);
       emotion.setEmotion("neutral");
     }
   }
