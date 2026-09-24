@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <SD.h>
 #include <time.h>
+#include <vector>
 
 MemoryStore::MemoryStore(fs::FS& fs, const char* root) : _fs(fs), _root(root) {}
 
@@ -33,6 +34,17 @@ bool MemoryStore::begin(const Policy& policy) {
            ensureDir(_root + "/index");
 
   if (_ready) {
+    if (!_fs.exists(factsPath())) {
+      File f = _fs.open(factsPath(), FILE_WRITE);
+      if (f) {
+        f.close();
+        Serial.printf("MemoryStore: created %s\n", factsPath().c_str());
+      }
+    }
+    if (!_fs.exists(summariesPath())) {
+      File f = _fs.open(summariesPath(), FILE_WRITE);
+      if (f) f.close();
+    }
     compactDialoguesFile();
     cleanupScaffoldMemoryRecords();
     appendEvent("system", String("memory_store_ready session=") + _sessionId, "state");
@@ -74,6 +86,217 @@ bool MemoryStore::appendFact(const String& fact, const char* source, float confi
   line += "\"fact\":\"" + jsonEscape(cleanFact) + "\"";
   line += "}";
   return appendJsonLine(factsPath(), line);
+}
+
+static String normalizeFactText(const String& text) {
+  String s = text;
+  s.toLowerCase();
+  String out = "";
+  out.reserve(s.length());
+  bool lastSpace = false;
+  for (size_t i = 0; i < s.length(); ++i) {
+    char c = s[i];
+    if (c == '.' || c == ',' || c == '!' || c == '?' || c == ':' || c == ';' ||
+        c == '-' || c == '_' || c == '"' || c == '\'' || c == '`' || c == '(' || c == ')' ||
+        c == '[' || c == ']' || c == '{' || c == '}' || c == '\r' || c == '\n' || c == '\t') {
+      c = ' ';
+    }
+    if (c == ' ') {
+      if (!lastSpace && out.length() > 0) {
+        out += ' ';
+        lastSpace = true;
+      }
+    } else {
+      out += c;
+      lastSpace = false;
+    }
+  }
+  out.trim();
+  return out;
+}
+
+MemoryStore::SaveFactResult MemoryStore::saveFact(const String& fact, const String& key, const String& category) {
+  SaveFactResult res;
+  if (!_ready) {
+    res.ok = false;
+    res.message = "MemoryStore not ready";
+    return res;
+  }
+
+  String cleanFact = fact;
+  cleanFact.trim();
+  if (!cleanFact.length()) {
+    res.ok = false;
+    res.message = "Fato vazio";
+    return res;
+  }
+
+  String cleanKey = key;
+  cleanKey.trim();
+  cleanKey.toLowerCase();
+  cleanKey.replace(" ", "_");
+
+  String cleanCat = category;
+  cleanCat.trim();
+  cleanCat.toLowerCase();
+  if (!cleanCat.length()) cleanCat = "general";
+
+  String normNew = normalizeFactText(cleanFact);
+
+  // Scan existing facts for exact dedup or key update
+  String lastFactForThisKey = "";
+  String normFactForThisKey = "";
+  bool exactFactFoundAnywhere = false;
+
+  if (_fs.exists(factsPath())) {
+    File f = _fs.open(factsPath(), FILE_READ);
+    if (f) {
+      while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (!line.length()) continue;
+        JsonDocument doc;
+        if (deserializeJson(doc, line) != DeserializationError::Ok) continue;
+        String candFact = String((const char*)(doc["fact"] | doc["text"] | ""));
+        String candKey = String((const char*)(doc["key"] | ""));
+        candKey.trim();
+        candKey.toLowerCase();
+
+        String normCand = normalizeFactText(candFact);
+        if (normCand == normNew) {
+          exactFactFoundAnywhere = true;
+        }
+        if (cleanKey.length() && candKey == cleanKey) {
+          lastFactForThisKey = candFact;
+          normFactForThisKey = normCand;
+        }
+      }
+      f.close();
+    }
+  }
+
+  // Deduplication & Update Logic
+  if (cleanKey.length()) {
+    if (lastFactForThisKey.length()) {
+      if (normFactForThisKey == normNew) {
+        // Same key, identical normalized fact -> already known!
+        res.ok = true;
+        res.alreadyKnown = true;
+        res.updated = false;
+        res.key = cleanKey;
+        res.fact = cleanFact;
+        res.message = "Fato ja conhecido para esta chave. Nenhuma gravacao necessaria.";
+        Serial.printf("MemoryStore::saveFact: already_known key='%s'\n", cleanKey.c_str());
+        return res;
+      } else {
+        // Same key, different fact -> append new version (update)
+        res.updated = true;
+      }
+    } else if (exactFactFoundAnywhere) {
+      // Key is new, but exact fact already recorded under another/no key
+      res.ok = true;
+      res.alreadyKnown = true;
+      res.updated = false;
+      res.key = cleanKey;
+      res.fact = cleanFact;
+      res.message = "Fato identico ja registrado anteriormente.";
+      Serial.printf("MemoryStore::saveFact: already_known (exact text match)\n");
+      return res;
+    }
+  } else {
+    // No key provided -> check if exact fact exists anywhere
+    if (exactFactFoundAnywhere) {
+      res.ok = true;
+      res.alreadyKnown = true;
+      res.updated = false;
+      res.key = "";
+      res.fact = cleanFact;
+      res.message = "Fato identico ja registrado na memoria.";
+      Serial.printf("MemoryStore::saveFact: already_known without key\n");
+      return res;
+    }
+  }
+
+  // Append new record with source "user_explicit"
+  String line = "{";
+  line += "\"ts\":\"" + nowIso() + "\",";
+  line += "\"source\":\"user_explicit\",";
+  if (cleanKey.length()) {
+    line += "\"key\":\"" + jsonEscape(cleanKey) + "\",";
+  }
+  line += "\"category\":\"" + jsonEscape(cleanCat) + "\",";
+  line += "\"confidence\":1.00,";
+  line += "\"fact\":\"" + jsonEscape(cleanFact) + "\"";
+  line += "}";
+
+  bool appended = appendJsonLine(factsPath(), line);
+  res.ok = appended;
+  res.alreadyKnown = false;
+  res.key = cleanKey;
+  res.fact = cleanFact;
+  if (appended) {
+    if (res.updated) {
+      res.message = "Fato atualizado com sucesso na memoria persistente.";
+      Serial.printf("MemoryStore::saveFact: updated key='%s': %s\n", cleanKey.c_str(), cleanFact.c_str());
+    } else {
+      res.message = "Fato gravado com sucesso na memoria persistente.";
+      Serial.printf("MemoryStore::saveFact: saved new key='%s': %s\n", cleanKey.c_str(), cleanFact.c_str());
+    }
+  } else {
+    res.message = "Falha ao gravar no MicroSD.";
+  }
+  return res;
+}
+
+String MemoryStore::factsPreview(size_t maxChars) {
+  if (!_ready || !_fs.exists(factsPath())) return "";
+  File f = _fs.open(factsPath(), FILE_READ);
+  if (!f) return "";
+
+  // Collect latest entry per key
+  struct FactItem {
+    String key;
+    String text;
+  };
+  std::vector<FactItem> items;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+    JsonDocument doc;
+    if (deserializeJson(doc, line) != DeserializationError::Ok) continue;
+    String text = String((const char*)(doc["fact"] | doc["text"] | ""));
+    if (!text.length()) continue;
+    String candKey = String((const char*)(doc["key"] | ""));
+    candKey.trim();
+    candKey.toLowerCase();
+
+    if (candKey.length()) {
+      bool found = false;
+      for (auto& it : items) {
+        if (it.key == candKey) {
+          it.text = text;
+          found = true;
+          break;
+        }
+      }
+      if (!found) items.push_back({candKey, text});
+    } else {
+      items.push_back({"", text});
+    }
+  }
+  f.close();
+
+  String out = "";
+  for (const auto& it : items) {
+    String entry = "- " + it.text;
+    if (it.key.length()) entry += " (chave: " + it.key + ")";
+    entry += "\n";
+    if (out.length() + entry.length() > maxChars) break;
+    out += entry;
+  }
+  return out;
 }
 
 bool MemoryStore::appendSummary(const String& summary, const char* scope) {
@@ -437,42 +660,91 @@ String MemoryStore::searchMemory(const String& query, size_t maxResults, size_t 
   };
 
   uint32_t t_facts_start = millis();
-  File f = _fs.open(factsPath(), FILE_READ);
-  if (f) {
-    while (f.available()) {
-      String line = f.readStringUntil('\n');
-      line.trim();
-      if (!line.length()) continue;
-      JsonDocument doc;
-      if (deserializeJson(doc, line) != DeserializationError::Ok) continue;
-      String text = String((const char*)(doc["fact"] | doc["text"] | ""));
-      String observed = String((const char*)(doc["observed_start_ts"] | doc["ts"] | ""));
-      String observedDate = observed.length() >= 10 ? observed.substring(0, 10) : "";
-      if (dateFilter.length() && observedDate != dateFilter) continue;
-      String tags;
-      if (doc["tags"].is<JsonArray>()) {
-        for (JsonVariant t : doc["tags"].as<JsonArray>()) { tags += String((const char*)t); tags += " "; }
+  if (_fs.exists(factsPath())) {
+    File f = _fs.open(factsPath(), FILE_READ);
+    if (f) {
+      struct FactItem {
+        String key;
+        String text;
+        String observed;
+        String observedEnd;
+        String observedDate;
+        String sourceSession;
+        String tags;
+      };
+      std::vector<FactItem> items;
+
+      while (f.available()) {
+        String line = f.readStringUntil('\n');
+        line.trim();
+        if (!line.length()) continue;
+        JsonDocument doc;
+        if (deserializeJson(doc, line) != DeserializationError::Ok) continue;
+        String text = String((const char*)(doc["fact"] | doc["text"] | ""));
+        if (!text.length()) continue;
+        String candKey = String((const char*)(doc["key"] | ""));
+        candKey.trim();
+        candKey.toLowerCase();
+        String observed = String((const char*)(doc["observed_start_ts"] | doc["ts"] | ""));
+        String observedEnd = String((const char*)(doc["observed_end_ts"] | ""));
+        String observedDate = observed.length() >= 10 ? observed.substring(0, 10) : "";
+        String sourceSession = String((const char*)(doc["source_session"] | doc["session"] | ""));
+        String tags = String((const char*)(doc["category"] | ""));
+        if (doc["tags"].is<JsonArray>()) {
+          for (JsonVariant t : doc["tags"].as<JsonArray>()) { tags += " "; tags += String((const char*)t); }
+        }
+
+        if (candKey.length()) {
+          bool found = false;
+          for (auto& it : items) {
+            if (it.key == candKey) {
+              it.text = text;
+              it.observed = observed;
+              it.observedEnd = observedEnd;
+              it.observedDate = observedDate;
+              it.sourceSession = sourceSession;
+              it.tags = tags;
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            items.push_back({candKey, text, observed, observedEnd, observedDate, sourceSession, tags});
+          }
+        } else {
+          items.push_back({"", text, observed, observedEnd, observedDate, sourceSession, tags});
+        }
       }
-      String lower = text; lower.toLowerCase();
-      String tagsLower = tags; tagsLower.toLowerCase();
-      int score = scoreMemoryText(qLower, lower, tagsLower, observedDate);
-      // Recency bias only after an actual lexical/tag/date match.
-      if (score > 0) score += 2;
-      String j = "{\"layer\":\"fact\",\"score\":" + String(score) +
-                 ",\"observed_start_ts\":\"" + jsonEscape(observed) + "\"" +
-                 ",\"observed_end_ts\":\"" + jsonEscape(String((const char*)(doc["observed_end_ts"] | ""))) + "\"" +
-                 ",\"source_session\":\"" + jsonEscape(String((const char*)(doc["source_session"] | doc["session"] | ""))) + "\"" +
-                 ",\"tags\":\"" + jsonEscape(tags) + "\"" +
-                 ",\"text\":\"" + jsonEscape(text) + "\"}";
-      addHit(score, j);
+      f.close();
+
+      for (const auto& it : items) {
+        if (dateFilter.length() && it.observedDate != dateFilter) continue;
+        String lower = it.text; lower.toLowerCase();
+        String tagsLower = it.tags; tagsLower.toLowerCase();
+        int score = scoreMemoryText(qLower, lower, tagsLower, it.observedDate);
+        if (score > 0 || !qLower.length() ||
+            (it.key == "user_name" && (qLower.indexOf("nome") >= 0 || qLower.indexOf("chamo") >= 0 || qLower.indexOf("quem") >= 0)) ||
+            (it.key == "creator" && (qLower.indexOf("criador") >= 0 || qLower.indexOf("quem") >= 0))) {
+          if (score <= 0) score = 6;
+          score += 4;
+          String j = "{\"layer\":\"fact\",\"score\":" + String(score) +
+                     ",\"key\":\"" + jsonEscape(it.key) + "\"" +
+                     ",\"observed_start_ts\":\"" + jsonEscape(it.observed) + "\"" +
+                     ",\"observed_end_ts\":\"" + jsonEscape(it.observedEnd) + "\"" +
+                     ",\"source_session\":\"" + jsonEscape(it.sourceSession) + "\"" +
+                     ",\"tags\":\"" + jsonEscape(it.tags) + "\"" +
+                     ",\"text\":\"" + jsonEscape(it.text) + "\"}";
+          addHit(score, j);
+        }
+      }
     }
-    f.close();
   }
   uint32_t t_facts_ms = millis() - t_facts_start;
 
   uint32_t t_sum_start = millis();
-  f = _fs.open(summariesPath(), FILE_READ);
-  if (f) {
+  if (_fs.exists(summariesPath())) {
+    File f = _fs.open(summariesPath(), FILE_READ);
+    if (f) {
     while (f.available()) {
       String line = f.readStringUntil('\n');
       line.trim();
@@ -500,6 +772,7 @@ String MemoryStore::searchMemory(const String& query, size_t maxResults, size_t 
     }
     f.close();
   }
+}
   uint32_t t_sum_ms = millis() - t_sum_start;
 
   // Emit hits sorted by score descending.

@@ -82,6 +82,20 @@ String GeminiToolBridge::functionDeclarationsJson() {
   smProps["query"]["description"] = "Memory search query.";
   smParams["required"].add("query");
 
+  auto rememberFact = arr.add<JsonObject>();
+  rememberFact["name"] = "remember_fact";
+  rememberFact["description"] = "Grava na memória persistente de longo prazo do robô um fato geral durável sobre o usuário, seu criador, ambiente ou preferências (ex: nome do usuário, quem te criou, estilo de resposta). NUNCA use para senhas, PINs ou segredos (para segredos, use remember_private_memory).";
+  auto rfParams = rememberFact["parameters"].to<JsonObject>();
+  rfParams["type"] = "object";
+  auto rfProps = rfParams["properties"].to<JsonObject>();
+  rfProps["fact"]["type"] = "string";
+  rfProps["fact"]["description"] = "O fato em linguagem natural a ser lembrado (ex: 'O nome do usuário é Nilo Júnior', 'Nilo Júnior é o criador da Pix', 'O usuário prefere respostas curtas').";
+  rfProps["key"]["type"] = "string";
+  rfProps["key"]["description"] = "Identificador ou tópico curto para permitir atualização futura (ex: 'user_name', 'creator', 'user_preference').";
+  rfProps["category"]["type"] = "string";
+  rfProps["category"]["description"] = "Categoria: identity, preference, creator, environment ou general.";
+  rfParams["required"].add("fact");
+
   auto rememberPrivate = arr.add<JsonObject>();
   rememberPrivate["name"] = "remember_private_memory";
   rememberPrivate["description"] = "Store a private local memory such as a PIN, code, password, token, address, or other user-explicit secret. Use only when the user explicitly asks you to remember it. This stays on the robot SD card and must never be sent to Hermes/gateway or ordinary search_memory.";
@@ -432,6 +446,39 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
     }
     response["instruction"] = "Use the time-aware local retrieval_json. Prefer active/fresh results; if several dates/sessions are present, answer as separate episodes and do not merge them. Do not request raw archived dialogues or expose private values.";
     return LocalStatus::Handled;
+  }
+
+  if (name == "remember_fact") {
+    if (!memory_) {
+      response["ok"] = false;
+      response["error"] = "memory_store_not_attached";
+      return LocalStatus::Error;
+    }
+    String fact = String((const char*)(args["fact"] | ""));
+    String key = String((const char*)(args["key"] | ""));
+    String category = String((const char*)(args["category"] | "general"));
+
+    // Check sensitive terms
+    String fLower = fact;
+    fLower.toLowerCase();
+    if (fLower.indexOf("pin") >= 0 || fLower.indexOf("password") >= 0 ||
+        fLower.indexOf("senha") >= 0 || fLower.indexOf("token") >= 0 ||
+        fLower.indexOf("segredo") >= 0 || fLower.indexOf("secret") >= 0) {
+      response["ok"] = false;
+      response["error"] = "sensitive_content_rejected";
+      response["instruction"] = "NUNCA salve senhas, PINs ou segredos com remember_fact. Se o usuario pediu explicitamente para guardar um segredo, use remember_private_memory.";
+      return LocalStatus::Handled;
+    }
+
+    auto res = memory_->saveFact(fact, key, category);
+    response["ok"] = res.ok;
+    response["stored"] = res.ok;
+    response["already_known"] = res.alreadyKnown;
+    response["updated"] = res.updated;
+    if (res.key.length()) response["key"] = res.key;
+    response["fact"] = res.fact;
+    response["message"] = res.message;
+    return res.ok ? LocalStatus::Handled : LocalStatus::Error;
   }
 
   if (name == "remember_private_memory") {

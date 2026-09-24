@@ -18,11 +18,22 @@ class MemoryStore {
 
   explicit MemoryStore(fs::FS& fs, const char* root = "/app/StackChan/memory");
 
+  struct SaveFactResult {
+    bool ok = false;
+    bool alreadyKnown = false;
+    bool updated = false;
+    String key;
+    String fact;
+    String message;
+  };
+
   bool begin();
   bool begin(const Policy& policy);
   bool appendEvent(const char* role, const String& text, const char* type = "utterance");
   bool appendDialogue(const char* role, const String& text, const char* source = "live_transcription");
   bool appendFact(const String& fact, const char* source = "assistant", float confidence = 0.7f);
+  SaveFactResult saveFact(const String& fact, const String& key = "", const String& category = "general");
+  String factsPreview(size_t maxChars = 2000);
   bool appendSummary(const String& summary, const char* scope = "session");
   bool rememberPrivateMemory(const String& kind, const String& label, const String& value);
   bool recallPrivateMemory(const String& query, String& kind, String& label, String& value, String& ts);
