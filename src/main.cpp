@@ -243,7 +243,7 @@ static void playCatPurrDocileSound() {
   M5.Speaker.playRaw(soundBuf, pos, kSampleRate, false, 1, kEffectChannel, false);
 }
 
-static void configureAudio(uint8_t micMagnification = 16, uint8_t micNoiseFilterLevel = 0) {
+static void configureAudio(uint8_t micMagnification = 8, uint8_t micNoiseFilterLevel = 0) {
   if (micMagnification < 1) micMagnification = 1;
   if (micMagnification > 24) micMagnification = 24;
   if (micNoiseFilterLevel > 4) micNoiseFilterLevel = 4;

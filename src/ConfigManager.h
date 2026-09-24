@@ -21,11 +21,11 @@ class ConfigManager {
     String gatewayBaseUrl;
     String wifiSsid;
     uint8_t speakerVolume = 200;
-    uint8_t micMagnification = 16;
+    uint8_t micMagnification = 8;
     uint8_t micNoiseFilterLevel = 0;
     uint16_t vadPrefixPaddingMs = 200;
     uint16_t vadSilenceDurationMs = 280;
-    bool vadStartSensitivityHigh = true; // START_SENSITIVITY_HIGH (Patch 4 audio stable)
+    bool vadStartSensitivityHigh = false; // START_SENSITIVITY_LOW (Consolidated post-audio)
     bool vadEndSensitivityLow = false; // END_SENSITIVITY_HIGH for immediate conversational turn
     bool vadTurnIncludesAllInput = true; // Patch 4 baseline
     String systemPrompt;

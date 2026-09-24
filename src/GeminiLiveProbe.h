@@ -120,13 +120,17 @@ class GeminiLiveProbe {
   void setContinuousConversation(bool enabled) { continuous_conversation_ = enabled; }
   bool requestConversationStart();
   void stopConversation();
-  bool armConversation(const char* source = nullptr) { return requestConversationStart(); }
-  void disarmConversation(const char* reason = nullptr) { stopConversation(); }
-  bool isConversationArmed() const { return true; }
-  uint32_t audioSentWhileDisarmed() const { return 0; }
-  uint32_t armCountGesture() const { return 0; }
-  uint32_t armCountTouch() const { return 0; }
-  uint32_t disarmCountTimeout() const { return 0; }
+  bool armConversation(const char* source = nullptr);
+  void disarmConversation(const char* reason = nullptr);
+  bool isConversationArmed() const { return conversation_armed_; }
+  uint32_t audioSentWhileDisarmed() const { return audio_sent_while_disarmed_; }
+  uint32_t armCountGesture() const { return arm_count_gesture_; }
+  uint32_t armCountTouch() const { return arm_count_touch_; }
+  uint32_t disarmCountTimeout() const { return disarm_count_timeout_; }
+  uint32_t rmsCrossUpCount() const { return rms_cross_up_count_; }
+  uint32_t rmsCrossDownCount() const { return rms_cross_down_count_; }
+  uint32_t gateForceCloseCount() const { return gate_force_close_count_; }
+  float noiseFloorRms() const { return noise_floor_rms_; }
   void requestSessionEnd(const String& reason = "");
   void startRealtimeRecord();
   void stopRealtimeRecord();
@@ -170,7 +174,11 @@ class GeminiLiveProbe {
   static constexpr uint32_t CONTINUOUS_CONVERSATION_TIMEOUT_MS = 90000; // 90s silence timeout: comfortable conversational pacing, allows natural pauses to think
   static constexpr uint32_t CONTINUOUS_RECORD_WATCHDOG_MS = 2500;
   static constexpr uint32_t END_SESSION_GRACE_MS = 8000;
-  static constexpr uint16_t kNoiseGateRmsThreshold = 220;
+  static constexpr uint32_t ARMED_INACTIVITY_TIMEOUT_MS = 15000;
+  static constexpr uint32_t WAITING_MODEL_GUARD_MS = 6000;
+  static constexpr uint32_t GATE_MAX_OPEN_MS = 12000; // 12s anti-latch failsafe
+  static constexpr uint16_t kGateOpenDeltaRms = 300;
+  static constexpr uint16_t kGateCloseDeltaRms = 150;
   static constexpr uint8_t kNoiseGateHangoverChunks = 4; // ~250ms natural speech tail
   static constexpr uint8_t kPostSpeechSilenceChunks = 5; // ~312ms explicit digital silence to commit turn instantly
 
@@ -199,6 +207,18 @@ class GeminiLiveProbe {
   bool connected_ = false;
   bool setup_complete_ = false;
   bool realtime_recording_ = false;
+  bool conversation_armed_ = false;
+  uint32_t armed_timeout_deadline_ms_ = 0;
+  uint32_t waiting_model_started_ms_ = 0;
+  bool waiting_model_aborted_turn_ = false;
+  uint32_t audio_sent_while_disarmed_ = 0;
+  uint32_t arm_count_gesture_ = 0;
+  uint32_t arm_count_touch_ = 0;
+  uint32_t disarm_count_timeout_ = 0;
+  uint32_t rms_cross_up_count_ = 0;
+  uint32_t rms_cross_down_count_ = 0;
+  uint32_t gate_force_close_count_ = 0;
+  float noise_floor_rms_ = 180.0f; // Baseline noise floor at gain=8
   bool speaking_ = false;
   bool stream_aborted_ = false;
   uint32_t stream_aborted_ms_ = 0;
@@ -271,7 +291,7 @@ class GeminiLiveProbe {
   uint8_t speaker_volume_ = 200;
   uint16_t vad_prefix_padding_ms_ = 200;
   uint16_t vad_silence_duration_ms_ = 280;
-  bool vad_start_sensitivity_high_ = true; // START_SENSITIVITY_HIGH (Patch 4 audio stable)
+  bool vad_start_sensitivity_high_ = false; // START_SENSITIVITY_LOW (Consolidated post-audio)
   bool vad_end_sensitivity_low_ = false; // Fast immediate cut-off
   bool vad_turn_includes_all_input_ = true;
   String api_key_storage_;
@@ -299,6 +319,9 @@ class GeminiLiveProbe {
   void recordAndSendAudioChunk();
   void playListeningChirp();
   void sendRealtimeAudioBase64(const String& b64);
+  void cancelWaitingModelGuard(const char* reason = nullptr);
+  void checkWaitingModelGuard();
+  void recoverFromWaitingModel();
   String encodeBase64(const uint8_t* input, size_t size);
   int decodeBase64(const char* input, int size, char* output);
 };
