@@ -27,6 +27,7 @@ String GeminiToolBridge::functionDeclarationsJson() {
 
   noArgTool("get_robot_status", "Get StackChan robot status: battery, network, state, and local memory health.");
   noArgTool("get_sensor_readings", "Read the real sensors connected to StackChan: distance, temperature, humidity, and atmospheric pressure.");
+  noArgTool("get_current_datetime", "Consulta a data e o horário atual no relógio local da Pix sincronizado via NTP. Retorna ano, mês, dia, hora, minuto, segundo, dia da semana e fuso horário. Use sempre que o usuário perguntar que horas são, que dia é hoje, qual o dia da semana ou qualquer pergunta sobre data e hora atual.");
 
   auto volControl = arr.add<JsonObject>();
   volControl["name"] = "set_speaker_volume";
@@ -299,6 +300,49 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
     response["pressure_hpa"] = env.pressure;
     response["environment_valid"] = env.valid;
     return ok ? LocalStatus::Handled : LocalStatus::Error;
+  }
+
+  if (name == "get_current_datetime") {
+    struct tm timeInfo;
+    bool hasTime = getLocalTime(&timeInfo, 10);
+    // If system time is not yet synced, try restoring from RTC if available
+    if ((!hasTime || timeInfo.tm_year < (2024 - 1900)) && M5.Rtc.isEnabled()) {
+      M5.Rtc.setSystemTimeFromRtc();
+      hasTime = getLocalTime(&timeInfo, 10);
+    }
+
+    if (!hasTime || timeInfo.tm_year < (2024 - 1900)) {
+      response["ok"] = false;
+      response["error"] = "time_not_synchronized";
+      response["message"] = "O relogio local ainda nao sincronizou via NTP/SNTP.";
+      return LocalStatus::Handled;
+    }
+
+    // Sync RTC with valid time for offline resilience
+    if (M5.Rtc.isEnabled()) {
+      M5.Rtc.setDateTime(&timeInfo);
+    }
+
+    static const char* const weekdaysPt[] = {
+      "domingo", "segunda-feira", "terça-feira", "quarta-feira",
+      "quinta-feira", "sexta-feira", "sábado"
+    };
+
+    char dateBuf[16];
+    char timeBuf[16];
+    snprintf(dateBuf, sizeof(dateBuf), "%04d-%02d-%02d", timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday);
+    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d", timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+
+    int wday = timeInfo.tm_wday;
+    const char* weekday = (wday >= 0 && wday <= 6) ? weekdaysPt[wday] : "desconhecido";
+
+    response["ok"] = true;
+    response["date"] = dateBuf;
+    response["time"] = timeBuf;
+    response["weekday"] = weekday;
+    response["timezone"] = "America/Sao_Paulo";
+    response["utc_offset"] = "-03:00";
+    return LocalStatus::Handled;
   }
 
   if (name == "get_news") {

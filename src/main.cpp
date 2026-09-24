@@ -293,6 +293,17 @@ static bool startWifiAsync(const ConfigManager& cfg) {
   return true;
 }
 
+static void configureNtpOnce() {
+  static bool s_ntp_init = false;
+  if (!s_ntp_init && WiFi.status() == WL_CONNECTED) {
+    s_ntp_init = true;
+    setenv("TZ", "<-03>3", 1);
+    tzset();
+    configTime(-3 * 3600, 0, "a.st1.ntp.br", "pool.ntp.org", "time.nist.gov");
+    Serial.println("Time: NTP configured (a.st1.ntp.br, pool.ntp.org, time.nist.gov) TZ=<-03>3");
+  }
+}
+
 static bool shouldStartSetupAccessPoint(const ConfigManager& cfg, bool sdConfigExists) {
   const auto& c = cfg.config();
   if (!sdConfigExists) return true;
@@ -446,7 +457,7 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
                   IPAddress(1, 1, 1, 1), IPAddress(8, 8, 8, 8));
       Serial.printf("WiFi: connected during boot screen! ip=%s dns=%s\n",
                     WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
-      configTime(-3 * 3600, 0, "a.st1.ntp.br", "pool.ntp.org", "time.nist.gov");
+      configureNtpOnce();
       liveFeeds.triggerBootPrefetch();
       webConfig.begin(configManager.webConfig());
       if (geminiConfigured && !geminiConnectTriggered) {
@@ -637,6 +648,11 @@ void setup() {
   esp_reset_reason_t rstReason = esp_reset_reason();
   Serial.printf("CoreS3 BOOT: reset_reason=%d\n", static_cast<int>(rstReason));
   M5StackChan.begin();
+  setenv("TZ", "<-03>3", 1);
+  tzset();
+  if (M5.Rtc.isEnabled()) {
+    M5.Rtc.setSystemTimeFromRtc();
+  }
   M5.Power.setExtOutput(true); // Enable 5V boost for Port A, Port B and Grove accessories
   bool imu_ok = M5.Imu.begin(&M5.In_I2C, M5.getBoard());
   Serial.printf("IMU init: %s type=%d\n", imu_ok ? "ok" : "failed", static_cast<int>(M5.Imu.getType()));
@@ -746,6 +762,7 @@ void setup() {
     // 4. Post-boot screen finalization
     bool wifi_ok = (WiFi.status() == WL_CONNECTED);
     if (wifi_ok) {
+      configureNtpOnce();
       liveFeeds.waitForBootPrefetch(2000);
       Serial.println("[BOOT_PREFETCH] Gemini Live released");
       if (geminiConfigured && gemini.isReady()) {
@@ -867,8 +884,12 @@ void loop() {
   emotion.loop();
 
   // Update LiveFeedsManager system idle state for Core 0 background worker
+  bool isWifiConnected = (WiFi.status() == WL_CONNECTED);
+  if (isWifiConnected) {
+    configureNtpOnce();
+  }
   bool inSleep = (emotion.currentEmotion() == "sleep");
-  bool systemIdle = (WiFi.status() == WL_CONNECTED) &&
+  bool systemIdle = isWifiConnected &&
                     ((inSleep && !realAudioSpeaking && !gemini.isRecording() && !gemini.isTurnBusy()) ||
                      (gemini.turnState() == GeminiLiveProbe::LiveTurnState::IDLE && !realAudioSpeaking && !gemini.isRecording() && !gemini.isTurnBusy()));
   liveFeeds.setSystemIdle(systemIdle);

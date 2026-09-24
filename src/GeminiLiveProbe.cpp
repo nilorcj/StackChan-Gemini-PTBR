@@ -754,7 +754,9 @@ void GeminiLiveProbe::sendSetup() {
       "1. Quando o usuário te informar explicitamente fatos duráveis sobre ele, você, rotina, criador ou preferências (ex: 'Meu nome é Nilo Júnior', 'Nilo Júnior é o criador da Pix', 'O usuário prefere respostas curtas'), chame a ferramenta remember_fact para gravá-los de forma durável, informando uma chave curta adequada (ex: key='user_name', key='creator', key='user_preference'). "
       "2. Use remember_fact SOMENTE para fatos duráveis e explicitamente fornecidos pelo usuário. NUNCA salve conversa casual, perguntas, cumprimentos, inferências próprias sem confirmação ou conteúdo temporário. "
       "3. NUNCA salve senhas, PINs ou segredos em remember_fact (se o usuário pedir expressamente para guardar segredos, use remember_private_memory). "
-      "4. Quando o usuário perguntar sobre o nome dele, preferências ou fatos passados ('qual é o meu nome?', 'quem te criou?'), chame SEMPRE search_memory antes de responder se a informação não estiver evidente nos seus fatos conhecidos. Nunca invente ou afirme que lembra sem consultar search_memory.";
+      "4. Quando o usuário perguntar sobre o nome dele, preferências ou fatos passados ('qual é o meu nome?', 'quem te criou?'), chame SEMPRE search_memory antes de responder se a informação não estiver evidente nos seus fatos conhecidos. Nunca invente ou afirme que lembra sem consultar search_memory. "
+      "DATA, HORA E DIA DA SEMANA: "
+      "Quando o usuário perguntar que horas são, que dia é hoje, qual o dia da semana ou qualquer pergunta sobre data/hora atual ('que horas são?', 'que dia é hoje?', 'que dia da semana é hoje?', 'qual a data e hora agora?'), CHAME OBRIGATORIAMENTE a ferramenta get_current_datetime antes de responder. Nunca invente ou chute horários ou datas sem consultar get_current_datetime.";
   if (system_prompt_.length()) {
     instruction += " Additional system prompt from SD/Web UI: ";
     instruction += system_prompt_;
