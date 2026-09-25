@@ -18,6 +18,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #include "LiveFeedsManager.h"
 #include "GoogleCalendarClient.h"
 #include "TofGestureDetector.h"
+#include "PixBehaviorManager.h"
 
 #if __has_include("secrets.local.h")
 #include "secrets.local.h"
@@ -26,6 +27,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 GeminiLiveProbe gemini;
 MemoryStore memory(SD);
 TofGestureDetector g_tofDetector;
+PixBehaviorManager g_behaviorManager;
 ToolGatewayClient toolGateway;
 EmotionController emotion;
 ServoGestureController servoGestures;
@@ -49,6 +51,7 @@ static uint16_t g_current_distance_mm = 0;
 static uint32_t g_last_tof_fast_ms = 0;
 static uint32_t g_last_hand_swipe_ms = 0;
 static bool g_tof_presence = false;
+static bool g_is_currently_lifted = false;
 static uint32_t g_last_presence_reaction_ms = 0;
 static uint32_t g_last_air_pet_ms = 0;
 static uint32_t g_emotion_override_until_ms = 0;
@@ -62,7 +65,6 @@ static uint32_t g_darkness_start_ms = 0;
 static bool g_night_mode = false;
 static bool g_physical_mute = false;
 static float g_last_humidity = 0.0f;
-static uint32_t g_last_idle_breath_ms = 0;
 
 static const char* const kLiftPhrases[] = {
   "Ei, me coloca no chão! Não gosto de altura!",
@@ -92,15 +94,17 @@ static const char* const kTableReliefPhrases[] = {
   "Ainda bem! Ficar pendurada no ar dá um frio na espinha!"
 };
 
-static void speakFixedReaction(const char* eventName, const char* const phrases[], size_t count) {
-  if (!gemini.isReady() || gemini.isDoNotDisturb()) return;
+struct PendingSensoryReaction {
+  bool active = false;
+  const char* eventName = nullptr;
+  String turnText;
+  uint32_t queuedMs = 0;
+};
+static PendingSensoryReaction s_pending_reaction;
 
-  if (gemini.isTurnBusy()) {
-    Serial.printf("SensorySpeech [%s]: blocked/deferred (turn busy: state=%s speaking=%d debounce=%d)\n",
-                  eventName ? eventName : "SENSORY",
-                  gemini.turnStateString(),
-                  gemini.isSpeaking() ? 1 : 0,
-                  gemini.isInPostSpeechDebounce() ? 1 : 0);
+static void speakFixedReaction(const char* eventName, const char* const phrases[], size_t count) {
+  if (gemini.isDoNotDisturb()) {
+    s_pending_reaction.active = false;
     return;
   }
 
@@ -110,6 +114,22 @@ static void speakFixedReaction(const char* eventName, const char* const phrases[
   turn += "]: Diga exatamente esta frase em voz alta com muita expressividade e emoção: \"";
   turn += phrases[idx];
   turn += "\"";
+
+  if (gemini.isTurnBusy()) {
+    s_pending_reaction.active = true;
+    s_pending_reaction.eventName = eventName;
+    s_pending_reaction.turnText = turn;
+    s_pending_reaction.queuedMs = millis();
+    Serial.printf("SensorySpeech [%s]: deferred (turn busy: state=%s speaking=%d debounce=%d) -> queued: %s\n",
+                  eventName ? eventName : "SENSORY",
+                  gemini.turnStateString(),
+                  gemini.isSpeaking() ? 1 : 0,
+                  gemini.isInPostSpeechDebounce() ? 1 : 0,
+                  phrases[idx]);
+    return;
+  }
+
+  s_pending_reaction.active = false;
   Serial.printf("SensorySpeech [%s]: %s\n", eventName, phrases[idx]);
   gemini.requestTextTurn(turn);
 }
@@ -898,6 +918,36 @@ void loop() {
   // Servos: mantem servoGestures.loop() ativo apenas se houver gesto ja em curso, sem novos gestos
   servoGestures.loop();
 
+  // Abertura assíncrona do microfone após término real do gesto físico do aceno
+  static bool s_pending_wave_arm = false;
+  if (s_pending_wave_arm) {
+    if (g_physical_mute || gemini.isDoNotDisturb()) {
+      s_pending_wave_arm = false;
+    } else if (!M5.Speaker.isPlaying() && !servoGestures.active()) {
+      s_pending_wave_arm = false;
+      Serial.println("[WAVE:ARM] Gesto nod_yes finalizado e speaker livre -> abrindo microfone assincronamente!");
+      gemini.armConversation("FAST_GESTURE");
+    }
+  }
+
+  // Despacho de reação sensorial pendente (ex: alívio ao voltar para a mesa) após término da fala anterior
+  if (s_pending_reaction.active) {
+    if (gemini.isDoNotDisturb()) {
+      s_pending_reaction.active = false;
+    } else if (!gemini.isTurnBusy()) {
+      if (now - s_pending_reaction.queuedMs < 20000) {
+        Serial.printf("SensorySpeech [%s] (dispatching deferred phrase): %s\n",
+                      s_pending_reaction.eventName ? s_pending_reaction.eventName : "SENSORY",
+                      s_pending_reaction.turnText.c_str());
+        gemini.requestTextTurn(s_pending_reaction.turnText);
+      } else {
+        Serial.printf("SensorySpeech [%s]: deferred phrase expired (>20s)\n",
+                      s_pending_reaction.eventName ? s_pending_reaction.eventName : "SENSORY");
+      }
+      s_pending_reaction.active = false;
+    }
+  }
+
   // Reset temporary emotional reactions back to neutral after duration
   if (g_emotion_override_until_ms != 0 && now >= g_emotion_override_until_ms) {
     g_emotion_override_until_ms = 0;
@@ -905,6 +955,50 @@ void loop() {
       emotion.setEmotion("neutral");
     }
   }
+
+  // Update PixBehaviorManager homeostasis / passive decay
+  g_behaviorManager.update(now);
+
+  auto canBehaviorAct = [&]() {
+    return !gemini.isConversationArmed() &&
+           (gemini.turnState() == GeminiLiveProbe::LiveTurnState::IDLE) &&
+           !gemini.isSpeaking() &&
+           !gemini.isRecording() &&
+           (gemini.turnState() != GeminiLiveProbe::LiveTurnState::TOOL_CALL) &&
+           !g_is_currently_lifted &&
+           (emotion.currentEmotion() != "scared") &&
+           (emotion.currentEmotion() != "sleep") &&
+           (g_emotion_override_until_ms == 0);
+  };
+
+  auto executeBehaviorDecision = [&](BehaviorDecision decision, uint32_t nowMs) {
+    switch (decision) {
+      case BehaviorDecision::LOOK_AT_USER:
+        servoGestures.queueGesture("look_at_user");
+        break;
+      case BehaviorDecision::HAPPY_SHORT:
+        emotion.setEmotion("happy");
+        g_emotion_override_until_ms = nowMs + 2000;
+        servoGestures.queueGesture("nod_yes");
+        break;
+      case BehaviorDecision::CURIOUS_TILT:
+        servoGestures.queueGesture("curious_tilt");
+        break;
+      case BehaviorDecision::MEIGO_SHORT:
+        emotion.setEmotion("meigo");
+        g_emotion_override_until_ms = nowMs + 2500;
+        unitPaHub.purr();
+        servoGestures.queueGesture("curious_tilt");
+        playCatPurrDocileSound();
+        break;
+      case BehaviorDecision::IDLE_BREATH:
+        servoGestures.queueGesture("idle_breath");
+        break;
+      case BehaviorDecision::NO_ACTION:
+      default:
+        break;
+    }
+  };
 
   // Physical motion sensing: IMU suspenso durante fala para economizar barramento I2C e CPU
   if (!gemini.isSpeaking() && M5.Imu.isEnabled()) {
@@ -920,7 +1014,6 @@ void loop() {
       lastTotalG = totalG;
 
       static uint32_t lastLiftMs = 0;
-      static bool isCurrentlyLifted = false;
       static uint32_t tableStableSinceMs = 0;
       static uint32_t lastImuLogMs = 0;
       static uint32_t lastServoActiveMs = 0;
@@ -934,7 +1027,7 @@ void loop() {
       if (now - lastImuLogMs >= 1000) {
         lastImuLogMs = now;
         Serial.printf("IMU: ax=%.2f ay=%.2f az=%.2f totalG=%.2f gyro=%.1f jerk=%.2f lifted=%d servoMoving=%d\n",
-                      ax, ay, az, totalG, gyroMag, jerk, isCurrentlyLifted ? 1 : 0, servoMoving ? 1 : 0);
+                      ax, ay, az, totalG, gyroMag, jerk, g_is_currently_lifted ? 1 : 0, servoMoving ? 1 : 0);
       }
 
       // Calculate dynamic acceleration and filtered gravity for Eilik-style motion state machine
@@ -973,7 +1066,7 @@ void loop() {
 
       switch (s_motionState) {
         case EilikMotionState::RESTING:
-          isCurrentlyLifted = false;
+          g_is_currently_lifted = false;
           if (candidateLift && (now - lastLiftMs > 2000)) {
             s_motionState = EilikMotionState::MAYBE_LIFTING;
             s_motionStateTimeMs = now;
@@ -1009,7 +1102,7 @@ void loop() {
             s_motionState = EilikMotionState::LIFTED;
             s_motionStateTimeMs = now;
             lastLiftMs = now;
-            isCurrentlyLifted = true;
+            g_is_currently_lifted = true;
             g_last_human_activity_ms = now;
             emotion.setLifted(true);
             emotion.setEmotion("scared"); // Expressao de susto com altura
@@ -1031,14 +1124,14 @@ void loop() {
           break;
 
         case EilikMotionState::LIFTED: {
-          isCurrentlyLifted = true;
+          g_is_currently_lifted = true;
           // RETORNO A MESA: superficie calma sustentada por 800ms
           if (isCalmOnTable) {
             if (tableStableSinceMs == 0) tableStableSinceMs = now;
             else if (now - tableStableSinceMs >= 800) {
               s_motionState = EilikMotionState::RESTING;
               tableStableSinceMs = 0;
-              isCurrentlyLifted = false;
+              g_is_currently_lifted = false;
               emotion.setLifted(false);
               emotion.setEmotion("happy"); // Alivio ao retornar a seguranca da mesa
               g_emotion_override_until_ms = now + 3500;
@@ -1190,21 +1283,14 @@ void loop() {
       }
       // Prioridade 5: Gesto válido para abrir conversa!
       else {
-        Serial.println("Action: Gesto aceito -> Acordando e abrindo microfone!");
+        Serial.println("Action: Gesto aceito -> Acordando e preparando microfone!");
         g_last_human_activity_ms = now;
         playWakeDroidChirp();
         emotion.setEmotion("happy");
         g_emotion_override_until_ms = now + 2500;
         unitPaHub.click();
         servoGestures.queueGesture("nod_yes");
-
-        // Pequeno atraso para o chime tocar antes de capturar voz no mic
-        uint32_t chimeWait = 0;
-        while (M5.Speaker.isPlaying() && chimeWait < 250) {
-          delay(10);
-          chimeWait += 10;
-        }
-        gemini.armConversation("FAST_GESTURE");
+        s_pending_wave_arm = true;
       }
     }
     else if (tofEvt == TofEvent::USER_PRESENT) {
@@ -1218,6 +1304,9 @@ void loop() {
         servoGestures.queueGesture("look_at_user");
         unitPaHub.click();
         playWakeDroidChirp();
+      } else if (canBehaviorAct()) {
+        BehaviorDecision dec = g_behaviorManager.onEvent(BehaviorEvent::PRESENCE, now);
+        executeBehaviorDecision(dec, now);
       }
     }
     else if (tofEvt == TofEvent::USER_LEFT) {
@@ -1345,13 +1434,32 @@ void loop() {
       s_mid_touch_start_ms = 0;
       if (petDuration < 1800) {
         Serial.printf("Touch: middle affectionate pet (duration=%u ms)\n", petDuration);
-        unitPaHub.purr();
-        emotion.setEmotion("meigo");
-        g_emotion_override_until_ms = now + 3500;
-        servoGestures.queueGesture("curious_tilt");
-        playCatPurrDocileSound();
         if (emotion.currentEmotion() == "sleep" && !g_physical_mute && !gemini.isDoNotDisturb()) {
+          unitPaHub.purr();
+          emotion.setEmotion("meigo");
+          g_emotion_override_until_ms = now + 3500;
+          servoGestures.queueGesture("curious_tilt");
+          playCatPurrDocileSound();
           playWakeDroidChirp();
+          g_behaviorManager.onEvent(BehaviorEvent::TOUCH, now);
+        } else {
+          // Todo afago no eletrodo central deve sempre gerar:
+          // emotion = "meigo"
+          // playCatPurrDocileSound()
+          // feedback háptico purr
+          // O que pode variar suavemente é apenas o gesto físico: curious_tilt ou nod_yes
+          unitPaHub.purr();
+          emotion.setEmotion("meigo");
+          g_emotion_override_until_ms = now + 3000;
+          playCatPurrDocileSound();
+
+          static bool s_pet_gesture_toggle = false;
+          s_pet_gesture_toggle = !s_pet_gesture_toggle;
+          const char* petGesture = s_pet_gesture_toggle ? "curious_tilt" : "nod_yes";
+          servoGestures.queueGesture(petGesture);
+
+          g_behaviorManager.onEvent(BehaviorEvent::TOUCH, now);
+          Serial.printf("[TOUCH:TOP] afago central -> emotion=meigo sound=purr haptic=purr gesture=%s\n", petGesture);
         }
       }
     }
@@ -1552,12 +1660,10 @@ void loop() {
   //   servoGestures.queueGesture("speaking_micro_motion");
   // }
 
-  // Idle micro-movement / breathing simulation: small subtle adjustment every ~7.5 seconds while resting
-  if (emotion.currentEmotion() != "sleep" && !servoGestures.active() &&
-      !gemini.isRecording() && !gemini.isSpeaking() && g_emotion_override_until_ms == 0 &&
-      now - g_last_idle_breath_ms > 7500) {
-    g_last_idle_breath_ms = now;
-    servoGestures.queueGesture("idle_breath");
+  // Idle micro-movement / breathing simulation / spontaneous behaviors via PixBehaviorManager
+  if (canBehaviorAct() && !servoGestures.active()) {
+    BehaviorDecision dec = g_behaviorManager.onEvent(BehaviorEvent::IDLE_TICK, now);
+    executeBehaviorDecision(dec, now);
   }
 
   if (!gemini.isRecording() && !gemini.isSpeaking() && !gemini.continuousConversation() &&

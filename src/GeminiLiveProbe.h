@@ -17,6 +17,7 @@ class GeminiLiveProbe {
   static constexpr int AUDIO_RING_BUFFERS = 128;
   static constexpr size_t AUDIO_BUFFER_BYTES = 8 * 1024;   // Sub-block size for the ring (8 KB = ~170 ms @ 24kHz/16-bit)
   static constexpr size_t DECODE_BUFFER_BYTES = 64 * 1024; // Temporary decode buffer – must hold largest API chunk safely
+  static constexpr size_t PREBUFFER_BYTES = 32768;         // 32 KB real PCM bytes (~682 ms @ 24kHz/16-bit mono)
   static constexpr uint8_t PREBUFFER_CHUNKS = 4;  // 4 sub-blocks × 170 ms ≈ 682 ms jitter absorption
 
   ~GeminiLiveProbe();
@@ -49,13 +50,16 @@ class GeminiLiveProbe {
   bool isReady() const { return connected_ && setup_complete_; }
   bool isConnected() const { return connected_; }
   bool isRecording() const { return realtime_recording_; }
-  bool isSpeaking() const { return speaking_ || audio_buffered_count_ > 0 || (M5.Speaker.isRunning() && M5.Speaker.isPlaying(1)); }
+  bool isSpeaking() const { return speaking_ || audio_buffered_bytes_ > 0 || (M5.Speaker.isRunning() && M5.Speaker.isPlaying(1)); }
   bool streamAborted() const { return stream_aborted_; }
+  bool playbackGateOpen() const { return playback_gate_open_; }
+  size_t audioBufferedBytes() const { return audio_buffered_bytes_; }
   bool isInPostSpeechDebounce() const {
     return speech_finished_ms_ > 0 && (millis() - speech_finished_ms_ < 400);
   }
   bool isTurnBusy() const {
     return isSpeaking() ||
+           pending_text_turn_ ||
            turn_state_ == LiveTurnState::WAITING_MODEL ||
            turn_state_ == LiveTurnState::TOOL_CALL ||
            turn_state_ == LiveTurnState::SPEAKING ||
@@ -193,6 +197,8 @@ class GeminiLiveProbe {
   volatile int audio_queue_write_ = 0;
   volatile int audio_queue_read_ = 0;
   volatile int audio_buffered_count_ = 0;
+  volatile size_t audio_buffered_bytes_ = 0;
+  bool playback_gate_open_ = false;
   // Hybrid audio architecture metrics
   uint32_t api_audio_chunks_received_ = 0;  // API-level chunks received (each WebSocket audio message = 1)
   uint32_t api_audio_chunks_dropped_ = 0;   // API-level chunks dropped (oversize or no ring space)
@@ -248,6 +254,8 @@ class GeminiLiveProbe {
   uint32_t playback_started_ms_ = 0;
   uint16_t prebuffer_actual_chunks_ = 0;
   uint32_t underrun_count_ = 0;
+  uint32_t controlled_rebuffer_count_ = 0;
+  uint32_t rebuffer_wait_count_ = 0;
   uint32_t tool_call_gap_count_ = 0;
   uint32_t max_loop_duration_ms_ = 0;
   uint32_t last_ws_loop_ms_ = 0;

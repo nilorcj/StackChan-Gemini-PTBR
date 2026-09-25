@@ -732,7 +732,12 @@ void EmotionController::renderFullFace(LovyanGFX& display, const FaceState& s) {
   }
 
   if (micActive_ && !physicalMute_) {
-    // Glowing neon green mic indicator dot at top-right corner (indicates live mic listening)
+    // Glowing neon green mic indicator dot at top-right corner with "MIC ON" label
+    d.setTextDatum(textdatum_t::middle_right);
+    d.setTextSize(1);
+    d.setTextColor(0x07E0); // Vibrant neon green
+    d.drawString("MIC ON", w - 24, 14);
+
     d.fillCircle(w - 14, 14, 6, 0x03E0); // Soft green outer aura
     d.fillCircle(w - 14, 14, 4, 0x07E0); // Vibrant pure green
     d.fillCircle(w - 14, 14, 2, 0x97F4); // Specular center highlight

@@ -285,6 +285,8 @@ void GeminiLiveProbe::disconnect(bool intentional, const char* finalEmotion) {
   audio_queue_write_ = 0;
   audio_queue_read_ = 0;
   audio_buffered_count_ = 0;
+  audio_buffered_bytes_ = 0;
+  playback_gate_open_ = false;
   api_audio_chunks_received_ = 0;
   api_audio_chunks_dropped_ = 0;
   ring_blocks_enqueued_ = 0;
@@ -413,24 +415,37 @@ void GeminiLiveProbe::loop() {
   }
   if (realtime_recording_) recordAndSendAudioChunk();
 
-  // Jitter buffer pump:
-  // When a turn starts, wait until at least PREBUFFER_CHUNKS (12 chunks, ~240ms)
-  // are buffered in PSRAM (or full turn finished) before starting the hardware speaker DMA.
-  // Allow hardware queue up to 5 chunks (~100ms) to ensure continuous, butter-smooth audio!
-  bool canPlay = response_complete_received_ || stream_aborted_ || audio_buffered_count_ >= PREBUFFER_CHUNKS || audio_chunks_ > 0;
+  // Playback gate evaluation (Rules 2, 3, 4, 5, 8):
+  // When a turn starts or rebuffering after starvation, wait until real PCM bytes >= PREBUFFER_BYTES (32768)
+  // (or full response_complete / stream_aborted) before opening the gate to hardware speaker DMA.
+  if (!playback_gate_open_) {
+    if (response_complete_received_ || stream_aborted_ || audio_buffered_bytes_ >= PREBUFFER_BYTES) {
+      if (audio_buffered_bytes_ > 0) {
+        playback_gate_open_ = true;
+        if (audio_chunks_ == 0) {
+          playback_started_ms_ = millis();
+          prebuffer_actual_chunks_ = static_cast<uint16_t>(audio_buffered_count_);
+          uint32_t waitToPlayMs = (speaking_started_ms_ > 0 && playback_started_ms_ >= speaking_started_ms_) ?
+                                  (playback_started_ms_ - speaking_started_ms_) : 0;
+          Serial.printf("[DIAG:AUDIO_START] prebuffer_bytes=%u prebuffer_slots=%u wait_to_play=%lu ms response_complete=%d playback_gate_open=1\n",
+                        static_cast<unsigned>(audio_buffered_bytes_),
+                        static_cast<unsigned>(audio_buffered_count_),
+                        static_cast<unsigned long>(waitToPlayMs),
+                        response_complete_received_ ? 1 : 0);
+        } else {
+          // Re-buffer gate opened after starvation / tool call drain
+          Serial.printf("[DIAG:AUDIO_REBUFFER] prebuffer_bytes=%u prebuffer_slots=%u response_complete=%d playback_gate_open=1\n",
+                        static_cast<unsigned>(audio_buffered_bytes_),
+                        static_cast<unsigned>(audio_buffered_count_),
+                        response_complete_received_ ? 1 : 0);
+        }
+      }
+    }
+  }
+
   uint32_t pumpStartMs = millis();
   uint8_t chunksPumpedThisTick = 0;
-  while (canPlay && audio_buffered_count_ > 0 && M5.Speaker.isPlaying(1) < 2) {
-    if (audio_chunks_ == 0) {
-      playback_started_ms_ = millis();
-      prebuffer_actual_chunks_ = static_cast<uint16_t>(audio_buffered_count_);
-      uint32_t waitToPlayMs = (speaking_started_ms_ > 0 && playback_started_ms_ >= speaking_started_ms_) ?
-                              (playback_started_ms_ - speaking_started_ms_) : 0;
-      Serial.printf("[DIAG:AUDIO_START] prebuffer_chunks=%u wait_to_play=%lu ms response_complete=%d\n",
-                    static_cast<unsigned>(prebuffer_actual_chunks_),
-                    static_cast<unsigned long>(waitToPlayMs),
-                    response_complete_received_ ? 1 : 0);
-    }
+  while (playback_gate_open_ && audio_buffered_count_ > 0 && M5.Speaker.isPlaying(1) < 2) {
     uint8_t* buf = audio_buf_[audio_queue_read_];
     size_t len = audio_buf_len_[audio_queue_read_];
     if (buf && len > 0) {
@@ -438,6 +453,7 @@ void GeminiLiveProbe::loop() {
       if (queued) {
         audio_queue_read_ = (audio_queue_read_ + 1) % AUDIO_RING_BUFFERS;
         audio_buffered_count_--;
+        audio_buffered_bytes_ = (audio_buffered_bytes_ >= len) ? (audio_buffered_bytes_ - len) : 0;
         ++audio_chunks_;
         ++chunksPumpedThisTick;
         // [DIAG:SPK_QUEUE] per-chunk log temporarily disabled to prevent Serial output from distorting loop timing
@@ -447,6 +463,7 @@ void GeminiLiveProbe::loop() {
     } else {
       audio_queue_read_ = (audio_queue_read_ + 1) % AUDIO_RING_BUFFERS;
       audio_buffered_count_--;
+      audio_buffered_bytes_ = (audio_buffered_bytes_ >= len) ? (audio_buffered_bytes_ - len) : 0;
     }
   }
   if (chunksPumpedThisTick > 0) {
@@ -470,29 +487,66 @@ void GeminiLiveProbe::loop() {
       min_dma_depth_during_play_ = currentDma;
     }
 
-    // Underrun vs ToolCall Gap detection:
-    // software buffer drained and hardware DMA starved (isPlaying < 1) while response is not finished and stream not aborted
-    if (audio_buffered_count_ == 0 && currentDma == 0 && !response_complete_received_ && !stream_aborted_) {
+    // Rule 5: após esvaziamento causado por tool call ou starvation, fechar novamente o gate para rebufferizar
+    if (audio_buffered_bytes_ == 0 && currentDma == 0 && !response_complete_received_ && !stream_aborted_) {
+      if (playback_gate_open_) {
+        playback_gate_open_ = false;
+        ++controlled_rebuffer_count_;
+        Serial.printf("[DIAG:AUDIO_GATE_CLOSE] buffer starved (buffered_bytes=0 dma=0 chunks_played=%lu); re-arming prebuffer gate (need %u bytes)\n",
+                      static_cast<unsigned long>(audio_chunks_),
+                      static_cast<unsigned>(PREBUFFER_BYTES));
+      }
+
       static uint32_t s_last_underrun_log_ms = 0;
       uint32_t nowMs = millis();
       if (nowMs - s_last_underrun_log_ms >= 50) {
         s_last_underrun_log_ms = nowMs;
         if (tool_call_in_flight_) {
           ++tool_call_gap_count_;
-          Serial.printf("[DIAG:TOOLCALL_GAP] count=%lu buffered=0 dma=0 tool_in_flight=1 chunks_played=%lu free_heap=%u largest_block=%u\n",
+          Serial.printf("[DIAG:TOOLCALL_GAP] count=%lu prebuffer_bytes=%u prebuffer_slots=%u dma=0 playback_gate_open=0 tool_in_flight=1 chunks_played=%lu free_heap=%u largest_block=%u\n",
                         static_cast<unsigned long>(tool_call_gap_count_),
+                        static_cast<unsigned>(audio_buffered_bytes_),
+                        static_cast<unsigned>(audio_buffered_count_),
+                        static_cast<unsigned long>(audio_chunks_),
+                        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+        } else if (!playback_gate_open_) {
+          // Controlled rebuffer: gate já fechado, speaker DMA zerado, aguardando recompor PREBUFFER_BYTES
+          ++rebuffer_wait_count_;
+          Serial.printf("[DIAG:AUDIO_REBUFFER_WAIT] wait_ticks=%lu rebuffers=%lu prebuffer_bytes=%u prebuffer_slots=%u dma=0 playback_gate_open=0 chunks_played=%lu free_heap=%u largest_block=%u\n",
+                        static_cast<unsigned long>(rebuffer_wait_count_),
+                        static_cast<unsigned long>(controlled_rebuffer_count_),
+                        static_cast<unsigned>(audio_buffered_bytes_),
+                        static_cast<unsigned>(audio_buffered_count_),
                         static_cast<unsigned long>(audio_chunks_),
                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
         } else {
+          // Real underrun: playback estava aberto/ativo e o áudio acabou inesperadamente
           ++underrun_count_;
-          Serial.printf("[DIAG:AUDIO_UNDERRUN] underruns_real=%lu buffered=0 dma=0 chunks_played=%lu dma_min=%u free_heap=%u largest_block=%u\n",
+          Serial.printf("[DIAG:AUDIO_UNDERRUN] real_underruns=%lu prebuffer_bytes=%u prebuffer_slots=%u dma=0 playback_gate_open=1 chunks_played=%lu dma_min=%u free_heap=%u largest_block=%u\n",
                         static_cast<unsigned long>(underrun_count_),
+                        static_cast<unsigned>(audio_buffered_bytes_),
+                        static_cast<unsigned>(audio_buffered_count_),
                         static_cast<unsigned long>(audio_chunks_),
                         static_cast<unsigned>(min_dma_depth_during_play_),
                         static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                         static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
         }
+      }
+    } else if (playback_gate_open_ && currentDma == 0 && audio_buffered_bytes_ > 0) {
+      // Real underrun: gate aberto, áudio no ring, mas speaker DMA zerou (engasgo de pump)
+      static uint32_t s_last_real_underrun_ms = 0;
+      uint32_t nowMs = millis();
+      if (nowMs - s_last_real_underrun_ms >= 50) {
+        s_last_real_underrun_ms = nowMs;
+        ++underrun_count_;
+        Serial.printf("[DIAG:AUDIO_UNDERRUN] real_underruns=%lu buffered_bytes=%u dma=0 playback_gate_open=1 chunks_played=%lu free_heap=%u largest_block=%u\n",
+                      static_cast<unsigned long>(underrun_count_),
+                      static_cast<unsigned>(audio_buffered_bytes_),
+                      static_cast<unsigned long>(audio_chunks_),
+                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
       }
     }
   }
@@ -515,20 +569,24 @@ void GeminiLiveProbe::loop() {
   // In case of stream_aborted_ (WebSocket disconnected during playback), complete as soon as buffered and DMA drain to 0.
   bool drainFinished = false;
   if (stream_aborted_) {
-    if ((audio_buffered_count_ == 0 && !M5.Speaker.isPlaying(1)) ||
+    if ((audio_buffered_bytes_ == 0 && !M5.Speaker.isPlaying(1)) ||
         (stream_aborted_ms_ > 0 && millis() - stream_aborted_ms_ >= 1000)) {
       audio_buffered_count_ = 0;
+      audio_buffered_bytes_ = 0;
+      playback_gate_open_ = false;
       audio_queue_read_ = audio_queue_write_;
       drainFinished = true;
       Serial.println("GeminiLive: aborted stream fully drained from local buffers and speaker");
     }
-  } else if (response_complete_received_ && audio_buffered_count_ == 0 && !M5.Speaker.isPlaying(1) &&
+  } else if (response_complete_received_ && audio_buffered_bytes_ == 0 && !M5.Speaker.isPlaying(1) &&
              (millis() - last_response_complete_ms_ >= 400)) {
     drainFinished = true;
   }
 
   if (drainFinished) {
     speaking_ = false;
+    playback_gate_open_ = false;
+    audio_buffered_bytes_ = 0;
     stream_aborted_ = false;
     response_complete_received_ = false;
     speech_finished_ms_ = millis();
@@ -543,7 +601,7 @@ void GeminiLiveProbe::loop() {
     utterance_input_received_ = false;
     Serial.printf("GeminiLive: speech playback finished"
                   " ring_blocks=%lu ring_played=%lu prebuffer=%u waitToPlay=%lums"
-                  " minBuffered=%u maxBuffered=%u/%d underruns=%lu toolCallGaps=%lu dmaMin=%u maxLoopDuration=%ums totalDuration=%lums"
+                  " minBuffered=%u maxBuffered=%u/%d underruns=%lu rebuffers=%lu toolCallGaps=%lu dmaMin=%u maxLoopDuration=%ums totalDuration=%lums"
                   " api_rx=%lu api_dropped=%lu ring_enqueued=%lu ring_dropped=%lu internalFree=%u largestBlock=%u\n",
                   static_cast<unsigned long>(audio_chunks_),
                   static_cast<unsigned long>(audio_dropped_),
@@ -553,6 +611,7 @@ void GeminiLiveProbe::loop() {
                   static_cast<unsigned>(max_audio_buffered_),
                   AUDIO_RING_BUFFERS,
                   static_cast<unsigned long>(underrun_count_),
+                  static_cast<unsigned long>(controlled_rebuffer_count_),
                   static_cast<unsigned long>(tool_call_gap_count_),
                   static_cast<unsigned>(min_dma_depth_during_play_ == 255 ? 0 : min_dma_depth_during_play_),
                   static_cast<unsigned>(max_loop_duration_ms_),
@@ -570,6 +629,8 @@ void GeminiLiveProbe::loop() {
     speaking_started_ms_ = 0;
     prebuffer_actual_chunks_ = 0;
     underrun_count_ = 0;
+    controlled_rebuffer_count_ = 0;
+    rebuffer_wait_count_ = 0;
     tool_call_gap_count_ = 0;
     if (end_session_requested_) {
       end_session_requested_ = false;
@@ -939,6 +1000,7 @@ void GeminiLiveProbe::streamAudioDeltaBase64(const char* b64, size_t b64Len) {
     const size_t to_copy = (total < space) ? total : space;
     memcpy(audio_buf_[last_idx] + audio_buf_len_[last_idx], decode_buf_, to_copy);
     audio_buf_len_[last_idx] += to_copy;
+    audio_buffered_bytes_ += to_copy;
     offset += to_copy;
   }
 
@@ -948,6 +1010,7 @@ void GeminiLiveProbe::streamAudioDeltaBase64(const char* b64, size_t b64Len) {
     const size_t sub_len = (total - offset > AUDIO_BUFFER_BYTES) ? AUDIO_BUFFER_BYTES : (total - offset);
     memcpy(audio_buf_[audio_queue_write_], decode_buf_ + offset, sub_len);
     audio_buf_len_[audio_queue_write_] = sub_len;
+    audio_buffered_bytes_ += sub_len;
     audio_queue_write_ = (audio_queue_write_ + 1) % AUDIO_RING_BUFFERS;
     audio_buffered_count_++;
     ++ring_blocks_enqueued_;
@@ -962,26 +1025,40 @@ void GeminiLiveProbe::streamAudioDeltaBase64(const char* b64, size_t b64Len) {
 
   // ── Step 6: first audio chunk of this turn — transition to SPEAKING ──────
   if (!speaking_) {
-    Serial.println("GeminiLive: input audio committed -> speaking");
-    speaking_ = true;
-    speaking_started_ms_ = millis();
-    setTurnState(LiveTurnState::SPEAKING, "first model audio chunk received");
-    if (emotion_) emotion_->setEmotion("speaking");
-    stopRealtimeRecord();
-    acquireI2sSpeaker("first model audio chunk received");
-    // Reset per-turn playback counters (ring-level: blocks played/dropped by DMA pump)
-    audio_chunks_ = 0;
-    audio_dropped_ = 0;
-    // Reset per-turn API-level counters so speech playback finished log is accurate
-    api_audio_chunks_received_ = 1; // this chunk counts
-    api_audio_chunks_dropped_ = 0;
-    ring_blocks_enqueued_ = static_cast<uint32_t>(required_slots);
-    ring_blocks_dropped_ = 0;
-    audio_backpressure_wait_ms_ = 0;
-    min_audio_buffered_during_play_ = 0xFFFF;
-    playback_started_ms_ = 0;
-    prebuffer_actual_chunks_ = 0;
-    underrun_count_ = 0;
+    // Rule 7: micro-delta sozinho NÃO pode iniciar SPEAKING
+    // A micro-delta (e.g. 2-3 bytes or < 256 bytes) arriving after a tool call or at turn start
+    // must not prematurely trigger SPEAKING state until sufficient audio has accumulated or response is complete.
+    static constexpr size_t kMinSpeakingBytes = 256;
+    if (audio_buffered_bytes_ >= kMinSpeakingBytes || response_complete_received_) {
+      Serial.printf("GeminiLive: input audio committed -> speaking (buffered_bytes=%u slots=%u)\n",
+                    static_cast<unsigned>(audio_buffered_bytes_),
+                    static_cast<unsigned>(audio_buffered_count_));
+      speaking_ = true;
+      speaking_started_ms_ = millis();
+      setTurnState(LiveTurnState::SPEAKING, "first model audio chunk received");
+      if (emotion_) emotion_->setEmotion("speaking");
+      stopRealtimeRecord();
+      acquireI2sSpeaker("first model audio chunk received");
+      // Reset per-turn playback counters (ring-level: blocks played/dropped by DMA pump)
+      audio_chunks_ = 0;
+      audio_dropped_ = 0;
+      // Reset per-turn API-level counters so speech playback finished log is accurate
+      api_audio_chunks_received_ = 1; // this chunk counts
+      api_audio_chunks_dropped_ = 0;
+      ring_blocks_enqueued_ = static_cast<uint32_t>(required_slots);
+      ring_blocks_dropped_ = 0;
+      audio_backpressure_wait_ms_ = 0;
+      min_audio_buffered_during_play_ = 0xFFFF;
+      playback_started_ms_ = 0;
+      prebuffer_actual_chunks_ = 0;
+      underrun_count_ = 0;
+      controlled_rebuffer_count_ = 0;
+      rebuffer_wait_count_ = 0;
+    } else {
+      Serial.printf("[DIAG:MICRO_DELTA] buffered_bytes=%u (below min %u) -> holding in buffer, SPEAKING deferred\n",
+                    static_cast<unsigned>(audio_buffered_bytes_),
+                    static_cast<unsigned>(kMinSpeakingBytes));
+    }
   }
 }
 
@@ -1697,6 +1774,8 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
       pending_text_turn_ = false;
       pending_text_ = "";
       pending_start_recording_ = false;
+      response_complete_received_ = false;
+      setTurnState(LiveTurnState::WAITING_MODEL, "pending text turn submitted");
       Serial.println("GeminiLive: setupComplete; sending pending text turn");
       sendTextTurn(toSend);
     } else if (pending_start_recording_) {
@@ -1815,6 +1894,16 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
     flushOutputTranscript();
     response_complete_received_ = true;
     last_response_complete_ms_ = millis();
+    if (!speaking_ && audio_buffered_bytes_ > 0) {
+      Serial.printf("GeminiLive: responseComplete with uncommitted audio (%u bytes) -> speaking\n",
+                    static_cast<unsigned>(audio_buffered_bytes_));
+      speaking_ = true;
+      speaking_started_ms_ = millis();
+      setTurnState(LiveTurnState::SPEAKING, "responseComplete with buffered audio");
+      if (emotion_) emotion_->setEmotion("speaking");
+      stopRealtimeRecord();
+      acquireI2sSpeaker("responseComplete with buffered audio");
+    }
     Serial.printf("GeminiLive: responseComplete received (buffered=%d queued_chunks=%lu)\n",
                   audio_buffered_count_,
                   static_cast<unsigned long>(audio_chunks_));
