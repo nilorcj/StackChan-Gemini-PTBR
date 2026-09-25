@@ -52,7 +52,7 @@ String GeminiToolBridge::functionDeclarationsJson() {
   newsProps["limit"]["minimum"] = 1;
   newsProps["limit"]["maximum"] = 5;
   noArgTool("refresh_news_feeds", "Forca a atualizacao imediata dos feeds RSS de noticias do G1 e clima pela internet. Use quando o usuario pedir para atualizar ou buscar noticias novas.");
-  noArgTool("get_daily_agenda", "Consulta a agenda do Google Calendar do usuario para o dia de hoje. Use sempre que o usuario perguntar sobre agenda, compromissos, reunioes, afazeres, horarios ou como esta o dia. Retorna os compromissos para que voce faca um resumo caloroso, organico e humano.");
+  noArgTool("get_daily_agenda", "Consulta a agenda do Google Calendar do usuario para hoje e amanha. Use sempre que o usuario perguntar sobre agenda, compromissos de hoje, de amanha ou proximo compromisso, reunioes, afazeres ou horarios. Retorna os compromissos para que voce responda de forma calorosa, organica e humana.");
   noArgTool("ping_gateway", "Check that the home-server StackChan Tool Gateway is reachable.");
   noArgTool("get_server_time", "Get current Unix time from the home server running the gateway.");
   noArgTool("ha_get_light_states", "Get Home Assistant states for StackChan-allowlisted lights.");

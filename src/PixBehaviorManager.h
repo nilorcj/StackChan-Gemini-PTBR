@@ -41,13 +41,15 @@ class PixBehaviorManager {
   uint8_t affection_ = 50;
 
   uint32_t lastPresenceReactionMs_ = 0;
-  uint32_t presenceCooldownMs_ = 10000;
+  uint32_t presenceCooldownMs_ = 12000;
 
   uint32_t lastTouchReactionMs_ = 0;
   uint32_t touchCooldownMs_ = 3000;
 
-  uint32_t lastIdleSpontaneousMs_ = 0;
-  uint32_t idleCooldownMs_ = 7500;
+  uint32_t lastIdleTickMs_ = 0;
+  uint32_t nextIdleIntervalMs_ = 10000;
+  uint32_t lastSpontaneousActionMs_ = 0;
+  uint32_t spontaneousCooldownMs_ = 22000;
 
   uint32_t lastDecayMs_ = 0;
 

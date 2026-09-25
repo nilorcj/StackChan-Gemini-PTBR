@@ -3,9 +3,10 @@
 
 PixBehaviorManager::PixBehaviorManager()
     : energy_(60), curiosity_(55), affection_(50),
-      lastPresenceReactionMs_(0), presenceCooldownMs_(8000),
+      lastPresenceReactionMs_(0), presenceCooldownMs_(12000),
       lastTouchReactionMs_(0), touchCooldownMs_(2000),
-      lastIdleSpontaneousMs_(0), idleCooldownMs_(7500),
+      lastIdleTickMs_(0), nextIdleIntervalMs_(10000),
+      lastSpontaneousActionMs_(0), spontaneousCooldownMs_(22000),
       lastDecayMs_(0) {}
 
 const char* PixBehaviorManager::decisionToString(BehaviorDecision d) {
@@ -52,31 +53,31 @@ BehaviorDecision PixBehaviorManager::decidePresence(uint32_t nowMs) {
     return BehaviorDecision::NO_ACTION;
   }
 
-  // Internal state updates on presence perception
-  if (curiosity_ <= 95) curiosity_ += 5; else curiosity_ = 100;
+  // Ajustes de estado sutis por evento de chegada
+  if (curiosity_ <= 97) curiosity_ += 3; else curiosity_ = 100;
   if (affection_ <= 98) affection_ += 2; else affection_ = 100;
   if (energy_ <= 98) energy_ += 2; else energy_ = 100;
 
-  // Moderate response distribution: ~45% NO_ACTION, ~55% reaction
+  // Distribuicao moderada: 50% NO_ACTION (sem carencia), 22% LOOK_AT_USER, 16% CURIOUS_TILT, 12% HAPPY_SHORT
   uint32_t roll = esp_random() % 100;
   BehaviorDecision decision = BehaviorDecision::NO_ACTION;
 
-  if (roll < 45) {
+  if (roll < 50) {
     decision = BehaviorDecision::NO_ACTION;
-    // Set a moderate re-check backoff so we don't roll every single loop
     lastPresenceReactionMs_ = nowMs;
-    presenceCooldownMs_ = 4000 + (esp_random() % 3001); // 4-7s before next evaluation if ignored
+    presenceCooldownMs_ = 6000 + (esp_random() % 4001); // 6-10s antes da proxima avaliacao se ignorada
+    logDecision("PRESENCE", decision);
     return BehaviorDecision::NO_ACTION;
-  } else if (roll < 70) {
-    decision = BehaviorDecision::LOOK_AT_USER; // 25% total
-  } else if (roll < 85) {
-    decision = BehaviorDecision::CURIOUS_TILT; // 15% total
+  } else if (roll < 72) {
+    decision = BehaviorDecision::LOOK_AT_USER; // 22%
+  } else if (roll < 88) {
+    decision = BehaviorDecision::CURIOUS_TILT; // 16%
   } else {
-    decision = BehaviorDecision::HAPPY_SHORT;  // 15% total
+    decision = BehaviorDecision::HAPPY_SHORT;  // 12% (sorriso sutil)
   }
 
   lastPresenceReactionMs_ = nowMs;
-  presenceCooldownMs_ = 8000 + (esp_random() % 4001); // 8-12s cooldown after reaction
+  presenceCooldownMs_ = 12000 + (esp_random() % 6001); // 12-18s cooldown apos reagir
 
   logDecision("PRESENCE", decision);
   return decision;
@@ -87,66 +88,45 @@ BehaviorDecision PixBehaviorManager::decideTouch(uint32_t nowMs) {
     return BehaviorDecision::NO_ACTION;
   }
 
-  // Touch substantially boosts affection and gently raises energy
-  if (affection_ <= 92) affection_ += 8; else affection_ = 100;
-  if (energy_ <= 96) energy_ += 4; else energy_ = 100;
-  if (curiosity_ > 30) curiosity_ -= 2;
-
-  // Deterministic + randomized distribution:
-  // Meigo (affectionate purr) 50%, Happy 30%, Curious tilt 20%
-  uint32_t roll = esp_random() % 100;
-  BehaviorDecision decision = BehaviorDecision::MEIGO_SHORT;
-
-  if (roll < 50) {
-    decision = BehaviorDecision::MEIGO_SHORT;
-  } else if (roll < 80) {
-    decision = BehaviorDecision::HAPPY_SHORT;
-  } else {
-    decision = BehaviorDecision::CURIOUS_TILT;
-  }
+  // Afago eleva afeto e energia de forma sutil
+  if (affection_ <= 94) affection_ += 6; else affection_ = 100;
+  if (energy_ <= 97) energy_ += 3; else energy_ = 100;
 
   lastTouchReactionMs_ = nowMs;
-  touchCooldownMs_ = 2000 + (esp_random() % 2001); // 2-4s cooldown
+  touchCooldownMs_ = 2500;
 
-  logDecision("TOUCH", decision);
-  return decision;
+  return BehaviorDecision::MEIGO_SHORT;
 }
 
 BehaviorDecision PixBehaviorManager::decideIdle(uint32_t nowMs) {
-  if (nowMs - lastIdleSpontaneousMs_ < idleCooldownMs_) {
+  if (nowMs - lastIdleTickMs_ < nextIdleIntervalMs_) {
     return BehaviorDecision::NO_ACTION;
   }
 
-  // Idle distribution:
-  // 50% IDLE_BREATH (preserves breathing simulation)
-  // 20% NO_ACTION (calm resting)
-  // 15% LOOK_AT_USER (spontaneous glance)
-  // 15% CURIOUS_TILT (spontaneous curiosity)
-  uint32_t roll = esp_random() % 100;
-  BehaviorDecision decision = BehaviorDecision::IDLE_BREATH;
+  lastIdleTickMs_ = nowMs;
+  nextIdleIntervalMs_ = 9000 + (esp_random() % 8001); // Intervalo organico variavel entre 9s e 17s
 
-  if (roll < 50) {
-    decision = BehaviorDecision::IDLE_BREATH;
-    lastIdleSpontaneousMs_ = nowMs;
-    idleCooldownMs_ = 7000 + (esp_random() % 2001); // 7-9s between breaths
-    // No flood logging for standard breathing ticks
-  } else if (roll < 70) {
-    decision = BehaviorDecision::NO_ACTION;
-    lastIdleSpontaneousMs_ = nowMs;
-    idleCooldownMs_ = 5000 + (esp_random() % 3001); // 5-8s pause
-  } else if (roll < 85) {
-    decision = BehaviorDecision::LOOK_AT_USER;
-    lastIdleSpontaneousMs_ = nowMs;
-    idleCooldownMs_ = 18000 + (esp_random() % 12001); // 18-30s spontaneous cooldown
-    logDecision("IDLE", decision);
-  } else {
-    decision = BehaviorDecision::CURIOUS_TILT;
-    lastIdleSpontaneousMs_ = nowMs;
-    idleCooldownMs_ = 18000 + (esp_random() % 12001); // 18-30s spontaneous cooldown
-    logDecision("IDLE", decision);
+  // Acoes espontaneas raras: apenas se cooldown de 18-30s tiver expirado
+  bool canSpontaneous = (nowMs - lastSpontaneousActionMs_ >= spontaneousCooldownMs_);
+  if (canSpontaneous) {
+    uint32_t rollSpontaneous = esp_random() % 100;
+    if (rollSpontaneous < 22) { // 22% de chance quando elegivel -> raro e organico
+      lastSpontaneousActionMs_ = nowMs;
+      spontaneousCooldownMs_ = 18000 + (esp_random() % 12001); // Cooldown rigoroso de 18-30s
+
+      BehaviorDecision decision = (esp_random() % 2 == 0) ? BehaviorDecision::LOOK_AT_USER : BehaviorDecision::CURIOUS_TILT;
+      logDecision("IDLE_SPONTANEOUS", decision);
+      return decision;
+    }
   }
 
-  return decision;
+  // Comportamento normal de repouso: alternancia entre respiracao suave e repouso silencioso
+  uint32_t roll = esp_random() % 100;
+  if (roll < 45) {
+    return BehaviorDecision::IDLE_BREATH; // 45% respiracao ociosa
+  }
+
+  return BehaviorDecision::NO_ACTION; // 55% silencio/repouso calmo
 }
 
 void PixBehaviorManager::update(uint32_t nowMs) {

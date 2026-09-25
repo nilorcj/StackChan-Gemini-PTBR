@@ -479,6 +479,7 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
                     WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
       configureNtpOnce();
       liveFeeds.triggerBootPrefetch();
+      googleCalendar.prefetch(true);
       webConfig.begin(configManager.webConfig());
       if (geminiConfigured && !geminiConnectTriggered) {
         geminiConnectTriggered = true;
@@ -783,6 +784,9 @@ void setup() {
     bool wifi_ok = (WiFi.status() == WL_CONNECTED);
     if (wifi_ok) {
       configureNtpOnce();
+      if (!googleCalendar.hasCache()) {
+        googleCalendar.prefetch(true);
+      }
       liveFeeds.waitForBootPrefetch(2000);
       Serial.println("[BOOT_PREFETCH] Gemini Live released");
       if (geminiConfigured && gemini.isReady()) {
@@ -915,6 +919,17 @@ void loop() {
   liveFeeds.setSystemIdle(systemIdle);
   liveFeeds.loop();
 
+  // E2.1 B: Opportunistic calendar prefetch when system is strictly idle
+  static uint32_t s_last_cal_idle_refresh_ms = 0;
+  if (systemIdle && (now - s_last_cal_idle_refresh_ms >= 1800000 || !googleCalendar.hasCache())) {
+    if (ESP.getMaxAllocHeap() >= 40000) {
+      s_last_cal_idle_refresh_ms = now;
+      Serial.printf("[GoogleCalendar] opportunistic idle refresh starting (maxAllocHeap=%u)...\n",
+                    static_cast<unsigned>(ESP.getMaxAllocHeap()));
+      googleCalendar.prefetch(false);
+    }
+  }
+
   // Servos: mantem servoGestures.loop() ativo apenas se houver gesto ja em curso, sem novos gestos
   servoGestures.loop();
 
@@ -979,7 +994,6 @@ void loop() {
       case BehaviorDecision::HAPPY_SHORT:
         emotion.setEmotion("happy");
         g_emotion_override_until_ms = nowMs + 2000;
-        servoGestures.queueGesture("nod_yes");
         break;
       case BehaviorDecision::CURIOUS_TILT:
         servoGestures.queueGesture("curious_tilt");
