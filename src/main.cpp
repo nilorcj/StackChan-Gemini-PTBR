@@ -5,6 +5,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <esp_sntp.h>
 #include "GeminiLiveProbe.h"
 #include "MemoryStore.h"
 #include "ToolGatewayClient.h"
@@ -313,14 +314,27 @@ static bool startWifiAsync(const ConfigManager& cfg) {
   return true;
 }
 
+static void ntpTimeSyncNotificationCallback(struct timeval* tv) {
+  time_t nowSec = tv->tv_sec;
+  struct tm utcTm {};
+  gmtime_r(&nowSec, &utcTm);
+  if (M5.Rtc.isEnabled() && (utcTm.tm_year + 1900 >= 2026)) {
+    M5.Rtc.setDateTime(&utcTm);
+    Serial.printf("Time: RTC updated from NTP (UTC: %04d-%02d-%02d %02d:%02d:%02d)\n",
+                  utcTm.tm_year + 1900, utcTm.tm_mon + 1, utcTm.tm_mday,
+                  utcTm.tm_hour, utcTm.tm_min, utcTm.tm_sec);
+  }
+}
+
 static void configureNtpOnce() {
   static bool s_ntp_init = false;
   if (!s_ntp_init && WiFi.status() == WL_CONNECTED) {
     s_ntp_init = true;
-    setenv("TZ", "<-03>3", 1);
-    tzset();
-    configTime(-3 * 3600, 0, "a.st1.ntp.br", "pool.ntp.org", "time.nist.gov");
-    Serial.println("Time: NTP configured (a.st1.ntp.br, pool.ntp.org, time.nist.gov) TZ=<-03>3");
+    sntp_set_time_sync_notification_cb(ntpTimeSyncNotificationCallback);
+    configTime(0, 0, "a.st1.ntp.br", "pool.ntp.org", "time.nist.gov");
+    ConfigManager::applyTimezone(configManager.config().timezoneOffset);
+    Serial.printf("Time: NTP configured in UTC and timezone reapplied (offset=%d)\n",
+                  configManager.config().timezoneOffset);
   }
 }
 
@@ -478,6 +492,17 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
       Serial.printf("WiFi: connected during boot screen! ip=%s dns=%s\n",
                     WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
       configureNtpOnce();
+      // Wait up to 3500ms for NTP to synchronize so date/time is 100% accurate before prefetch!
+      uint32_t ntpWaitStart = millis();
+      while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && (millis() - ntpWaitStart < 3500)) {
+        delay(50);
+      }
+      time_t curSec = time(nullptr);
+      struct tm curTm {};
+      localtime_r(&curSec, &curTm);
+      Serial.printf("Time: post-NTP sync status=%d local_time=%02d:%02d %02d/%02d/%04d\n",
+                    static_cast<int>(sntp_get_sync_status()),
+                    curTm.tm_hour, curTm.tm_min, curTm.tm_mday, curTm.tm_mon + 1, curTm.tm_year + 1900);
       liveFeeds.triggerBootPrefetch();
       googleCalendar.prefetch(true);
       webConfig.begin(configManager.webConfig());
@@ -669,8 +694,7 @@ void setup() {
   esp_reset_reason_t rstReason = esp_reset_reason();
   Serial.printf("CoreS3 BOOT: reset_reason=%d\n", static_cast<int>(rstReason));
   M5StackChan.begin();
-  setenv("TZ", "<-03>3", 1);
-  tzset();
+  ConfigManager::applyTimezone(-3);
   if (M5.Rtc.isEnabled()) {
     M5.Rtc.setSystemTimeFromRtc();
   }
@@ -706,6 +730,7 @@ void setup() {
   toolBridge.setUnitPaHub(&unitPaHub);
   toolBridge.setLiveFeeds(&liveFeeds);
   toolBridge.setGoogleCalendar(&googleCalendar);
+  toolBridge.setConfigManager(&configManager);
   gemini.setEmotionController(&emotion);
   gemini.setMemoryStore(&memory);
   WebConfigServer::Config webConfigOptions;
@@ -749,6 +774,10 @@ void setup() {
 #endif
     bool runtime_config_exists = SD.exists("/app/StackChan/config/runtime.json");
     Serial.printf("ConfigManager init: %s\n", cfg_ok ? "ok" : "failed");
+    ConfigManager::applyTimezone(configManager.config().timezoneOffset);
+    if (M5.Rtc.isEnabled()) {
+      M5.Rtc.setSystemTimeFromRtc();
+    }
     configManager.printRedactedStatus(Serial);
     g_speaker_volume = configManager.config().speakerVolume;
     configureAudio(8, 0);
@@ -921,10 +950,11 @@ void loop() {
 
   // E2.1 B: Opportunistic calendar prefetch when system is strictly idle
   static uint32_t s_last_cal_idle_refresh_ms = 0;
-  if (systemIdle && (now - s_last_cal_idle_refresh_ms >= 1800000 || !googleCalendar.hasCache())) {
-    if (ESP.getMaxAllocHeap() >= 40000) {
+  if (systemIdle && (now - s_last_cal_idle_refresh_ms >= 1800000 || !googleCalendar.hasCache() || !googleCalendar.isCacheValidForToday())) {
+    if (ESP.getFreeHeap() >= 32000 && ESP.getMaxAllocHeap() >= 12000) {
       s_last_cal_idle_refresh_ms = now;
-      Serial.printf("[GoogleCalendar] opportunistic idle refresh starting (maxAllocHeap=%u)...\n",
+      Serial.printf("[GoogleCalendar] opportunistic idle refresh starting (freeHeap=%u maxAllocHeap=%u)...\n",
+                    static_cast<unsigned>(ESP.getFreeHeap()),
                     static_cast<unsigned>(ESP.getMaxAllocHeap()));
       googleCalendar.prefetch(false);
     }

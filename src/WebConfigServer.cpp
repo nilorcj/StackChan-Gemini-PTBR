@@ -1,9 +1,12 @@
 #include "WebConfigServer.h"
+#include "ConfigManager.h"
 #include <M5Unified.h>
 #include <M5StackChan.h>
 #include "UnitPaHubManager.h"
 
 extern UnitPaHubManager unitPaHub;
+#include "GoogleCalendarClient.h"
+extern GoogleCalendarClient googleCalendar;
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
@@ -238,22 +241,25 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   <nav class="tabs" aria-label="Settings sections"><button class="tab active" onclick="openTab('status')">Status</button><button class="tab" onclick="openTab('runtime')">Runtime</button><button class="tab" onclick="openTab('gateway')">Gateway</button><button class="tab" onclick="openTab('secrets')">Secrets</button><button class="tab" onclick="openTab('security')">Security</button><button class="tab" onclick="openTab('prompts')">Prompts</button><button class="tab" onclick="openTab('memory')">Memory</button></nav>
   <div class="grid">
     <section class="card active" data-tab="status"><h2>Status</h2><button onclick="loadStatus()" class="secondary">Refresh</button><button onclick="voiceToggle()">Wake / sleep</button><p class="muted">Uses the same voice toggle as touch: if the dialogue is asleep it wakes it, if it is listening it stops it.</p><pre id="status">...</pre></section>
-    <section class="card" data-tab="runtime"><h2>Runtime</h2><div class="row"><div><label>Robot ID</label><input id="robotId" value="stackchan"></div><div><label>Gemini model</label><input id="geminiModel" placeholder="models/gemini-3.1-flash-live-preview"></div></div><label>Gemini voice</label><select id="geminiVoice"><option value="Puck">Puck — upbeat</option><option value="Charon">Charon — informative</option><option value="Kore">Kore — firm</option><option value="Fenrir">Fenrir — excitable</option><option value="Aoede">Aoede — breezy</option><option value="Zephyr">Zephyr — bright</option><option value="Leda">Leda — youthful</option><option value="Orus">Orus — firm</option><option value="Callirrhoe">Callirrhoe — easy-going</option><option value="Autonoe">Autonoe — bright</option><option value="Enceladus">Enceladus — breathy</option><option value="Iapetus">Iapetus</option><option value="Umbriel">Umbriel</option><option value="Algieba">Algieba</option><option value="Despina">Despina</option><option value="Erinome">Erinome</option><option value="Algenib">Algenib</option><option value="Rasalgethi">Rasalgethi</option><option value="Laomedeia">Laomedeia</option><option value="Achernar">Achernar</option><option value="Alnilam">Alnilam</option><option value="Schedar">Schedar</option><option value="Gacrux">Gacrux</option><option value="Pulcherrima">Pulcherrima</option><option value="Achird">Achird</option><option value="Zubenelgenubi">Zubenelgenubi</option><option value="Vindemiatrix">Vindemiatrix</option><option value="Sadachbia">Sadachbia</option><option value="Sadaltager">Sadaltager</option><option value="Sulafat">Sulafat</option></select><p class="muted">Voice applies to the next Gemini Live session after reboot/reconnect.</p><label>Wi‑Fi SSID</label><input id="wifiSsid" placeholder="SSID is stored; password is stored separately in secrets"><label>Gateway Base URL</label><input id="gatewayUrl" placeholder="http://gateway.local:8811/stackchan"><label>Speaker volume: <span id="speakerVolumeLabel">200</span> / 255</label><input id="speakerVolume" type="range" min="0" max="255" step="1" value="200" oninput="speakerVolumeLabel.textContent=this.value"><div class="row"><div><label>Mic gain: <span id="micMagnificationLabel">16</span> / 24</label><input id="micMagnification" type="range" min="1" max="24" step="1" value="16" oninput="micMagnificationLabel.textContent=this.value"><p class="muted">Safe runtime gain. Baseline is 16; for tests try 20→22→24.</p></div><div><label>Mic noise filter: <span id="micNoiseFilterLabel">0</span> / 4</label><input id="micNoiseFilter" type="range" min="0" max="4" step="1" value="0" oninput="micNoiseFilterLabel.textContent=this.value"><p class="muted">Baseline is 0. Increase carefully: the filter may suppress quiet speech.</p></div></div><div class="row"><div><label>VAD prefix padding: <span id="vadPrefixPaddingLabel">800</span> ms</label><input id="vadPrefixPadding" type="range" min="0" max="2000" step="100" value="800" oninput="vadPrefixPaddingLabel.textContent=this.value"><p class="muted">Buffer before speech starts. Helps avoid losing the beginning of a phrase.</p></div><div><label>VAD silence duration: <span id="vadSilenceDurationLabel">900</span> ms</label><input id="vadSilenceDuration" type="range" min="100" max="3000" step="100" value="900" oninput="vadSilenceDurationLabel.textContent=this.value"><p class="muted">Pause before ending an utterance. Higher values reduce cut-offs but slow responses.</p></div></div><div class="row"><label><input id="vadStartSensitivityHigh" type="checkbox" checked> VAD start sensitivity high</label><label><input id="vadEndSensitivityLow" type="checkbox" checked> VAD end sensitivity low</label><label><input id="vadTurnIncludesAllInput" type="checkbox" checked> Turn includes all input</label></div><div class="row"><label><input id="wifiEnabled" type="checkbox"> Wi‑Fi enabled</label><label><input id="webEnabled" type="checkbox"> Web UI enabled</label><label><input id="geminiEnabled" type="checkbox"> Gemini enabled</label><label><input id="gatewayEnabled" type="checkbox"> Gateway enabled</label></div><button onclick="saveRuntime(false)">Save runtime</button><button onclick="saveRuntime(true)" class="danger">Save and reboot</button><button onclick="loadRuntime()" class="secondary">Load runtime</button><p class="muted">Volume and most runtime settings apply after reboot. “Save and reboot” writes settings to SD first, then reboots the robot.</p></section>
+    <section class="card" data-tab="runtime"><h2>Runtime</h2><div class="row"><div><label>Robot ID</label><input id="robotId" value="stackchan"></div><div><label>Gemini model</label><input id="geminiModel" placeholder="models/gemini-3.1-flash-live-preview"></div></div><label>Gemini voice</label><select id="geminiVoice"><option value="Puck">Puck — upbeat</option><option value="Charon">Charon — informative</option><option value="Kore">Kore — firm</option><option value="Fenrir">Fenrir — excitable</option><option value="Aoede">Aoede — breezy</option><option value="Zephyr">Zephyr — bright</option><option value="Leda">Leda — youthful</option><option value="Orus">Orus — firm</option><option value="Callirrhoe">Callirrhoe — easy-going</option><option value="Autonoe">Autonoe — bright</option><option value="Enceladus">Enceladus — breathy</option><option value="Iapetus">Iapetus</option><option value="Umbriel">Umbriel</option><option value="Algieba">Algieba</option><option value="Despina">Despina</option><option value="Erinome">Erinome</option><option value="Algenib">Algenib</option><option value="Rasalgethi">Rasalgethi</option><option value="Laomedeia">Laomedeia</option><option value="Achernar">Achernar</option><option value="Alnilam">Alnilam</option><option value="Schedar">Schedar</option><option value="Gacrux">Gacrux</option><option value="Pulcherrima">Pulcherrima</option><option value="Achird">Achird</option><option value="Zubenelgenubi">Zubenelgenubi</option><option value="Vindemiatrix">Vindemiatrix</option><option value="Sadachbia">Sadachbia</option><option value="Sadaltager">Sadaltager</option><option value="Sulafat">Sulafat</option></select><p class="muted">Voice applies to the next Gemini Live session after reboot/reconnect.</p><label>Timezone (Fuso Horário)</label><select id="timezoneOffset"><option value="-5">UTC-5 (Acre / Rio Branco)</option><option value="-4">UTC-4 (Manaus / Cuiabá / Boa Vista)</option><option value="-3">UTC-3 (Brasília / São Paulo / Salvador)</option><option value="-2">UTC-2 (Fernando de Noronha)</option><option value="-1">UTC-1 (Cabo Verde / Açores)</option><option value="0">UTC 0 (Londres / GMT)</option><option value="1">UTC+1 (Europa Central)</option></select><p class="muted">Fuso horário aplicado ao relógio local e à agenda.</p><label>Wi‑Fi SSID</label><input id="wifiSsid" placeholder="SSID is stored; password is stored separately in secrets"><label>Gateway Base URL</label><input id="gatewayUrl" placeholder="http://gateway.local:8811/stackchan"><label>Speaker volume: <span id="speakerVolumeLabel">200</span> / 255</label><input id="speakerVolume" type="range" min="0" max="255" step="1" value="200" oninput="speakerVolumeLabel.textContent=this.value"><div class="row"><div><label>Mic gain: <span id="micMagnificationLabel">16</span> / 24</label><input id="micMagnification" type="range" min="1" max="24" step="1" value="16" oninput="micMagnificationLabel.textContent=this.value"><p class="muted">Safe runtime gain. Baseline is 16; for tests try 20→22→24.</p></div><div><label>Mic noise filter: <span id="micNoiseFilterLabel">0</span> / 4</label><input id="micNoiseFilter" type="range" min="0" max="4" step="1" value="0" oninput="micNoiseFilterLabel.textContent=this.value"><p class="muted">Baseline is 0. Increase carefully: the filter may suppress quiet speech.</p></div></div><div class="row"><div><label>VAD prefix padding: <span id="vadPrefixPaddingLabel">800</span> ms</label><input id="vadPrefixPadding" type="range" min="0" max="2000" step="100" value="800" oninput="vadPrefixPaddingLabel.textContent=this.value"><p class="muted">Buffer before speech starts. Helps avoid losing the beginning of a phrase.</p></div><div><label>VAD silence duration: <span id="vadSilenceDurationLabel">900</span> ms</label><input id="vadSilenceDuration" type="range" min="100" max="3000" step="100" value="900" oninput="vadSilenceDurationLabel.textContent=this.value"><p class="muted">Pause before ending an utterance. Higher values reduce cut-offs but slow responses.</p></div></div><div class="row"><label><input id="vadStartSensitivityHigh" type="checkbox" checked> VAD start sensitivity high</label><label><input id="vadEndSensitivityLow" type="checkbox" checked> VAD end sensitivity low</label><label><input id="vadTurnIncludesAllInput" type="checkbox" checked> Turn includes all input</label></div><div class="row"><label><input id="wifiEnabled" type="checkbox"> Wi‑Fi enabled</label><label><input id="webEnabled" type="checkbox"> Web UI enabled</label><label><input id="geminiEnabled" type="checkbox"> Gemini enabled</label><label><input id="gatewayEnabled" type="checkbox"> Gateway enabled</label></div><button onclick="saveRuntime(false)">Save runtime</button><button onclick="saveRuntime(true)" class="danger">Save and reboot</button><button onclick="loadRuntime()" class="secondary">Load runtime</button><p class="muted">Volume and most runtime settings apply after reboot. “Save and reboot” writes settings to SD first, then reboots the robot.</p></section>
     <section class="card" data-tab="gateway"><h2>Gateway</h2><button onclick="loadTools()" class="secondary">Check tools</button><pre id="tools"></pre></section>
     <section class="card" data-tab="secrets"><h2>Secrets</h2><div class="row"><div><label>Gemini API key</label><input id="geminiKey" type="password" placeholder="enter/replace"></div><div><label>Gateway token</label><input id="gatewayToken" type="password" placeholder="optional"></div><div><label>Wi‑Fi password</label><input id="wifiPassword" type="password" placeholder="enter/replace"></div><div><label>Google Calendar URL (.ics)</label><input id="calendarUrl" type="password" placeholder="enter/replace"></div></div><button onclick="saveSecrets()" class="danger">Save secrets</button><p class="muted">The API never returns secret values, only set/missing status.</p></section>
     <section class="card" data-tab="security"><h2>Web security</h2><p class="muted">If no Web password is set, the local UI is open. After setting one, browser/API access uses HTTP Basic auth with user <code>stackchan</code>.</p><label>New Web password</label><input id="webPassword" type="password" placeholder="set or change password"><button onclick="saveWebPassword()" class="danger">Set Web password</button><p class="muted">Stored on SD as SHA-256, not returned by the API.</p></section>
     <section class="card" data-tab="prompts"><h2>Additional prompts</h2><p class="muted">This is an SD/Web overlay appended to the base StackChan firmware instructions. The base prompt with camera, search, head, and safety rules is not shown or replaced here. Changes apply to the next Gemini Live session/connection.</p><label>Additional system overlay</label><textarea id="systemPrompt"></textarea><label>Persona / style overlay</label><textarea id="personaPrompt"></textarea><button onclick="savePrompts()">Save overlay</button><button onclick="loadPrompts()" class="secondary">Load</button></section>
     <section class="card" data-tab="memory"><h2>Memory</h2><label>Summary model</label><input id="summaryModel" placeholder="gemini-flash-latest"><button onclick="saveSummaryConfig()" class="secondary">Save summary model</button><button onclick="loadMemory()" class="secondary">Context</button><button onclick="loadDialogues()" class="secondary">Dialogues</button><button onclick="loadSummaries()" class="secondary">Summary</button><label>Memory search</label><input id="memoryQuery" placeholder="who did you see today?"><button onclick="searchMemory()" class="secondary">Search memory</button><button onclick="loadMemoryStats()" class="secondary">Stats</button><button onclick="runSummarize()">Summarize</button><button onclick="runVectorize()">Vectorize</button><p class="muted">Summary v2 calls Gemini Flash/Lite using the SD API key. Ordinary numbers/dates/model IDs are preserved exactly; private PIN/code/password/address values remain markers and private-memory only.</p><pre id="memory"></pre></section>
   </div>
+  <footer style="margin-top:20px;text-align:center;color:#9ca3af;font-size:14px;border-top:1px solid #374151;padding-top:12px">
+    <span id="deviceDateTime">--:-- | carregando...</span>
+  </footer>
 <script>
 async function jget(u){const r=await fetch(u);return r.json()}
 async function jpost(u,o){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(o)});return r.json()}
 function show(id,o){document.getElementById(id).textContent=typeof o==='string'?o:JSON.stringify(o,null,2)}
 function openTab(name){document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===name));document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',(b.getAttribute('onclick')||'').indexOf("'"+name+"'")>=0))}
-async function loadStatus(){show('status',await jget('/api/status'))}
+async function loadStatus(){const s=await jget('/api/status');show('status',s);if(s&&s.formatted_datetime){const el=document.getElementById('deviceDateTime');if(el)el.textContent=s.formatted_datetime;}}
 async function voiceToggle(){show('status',await jpost('/api/voice/toggle',{}));setTimeout(loadStatus,700)}
-async function loadRuntime(){const c=await jget('/api/runtime');robotId.value=c.robot_id||'stackchan';geminiModel.value=c.gemini_model||'';geminiVoice.value=c.gemini_voice||'Aoede';wifiSsid.value='';wifiSsid.placeholder=c.wifi_ssid==='set'?'SSID is already stored; leave empty to keep it':'enter SSID';gatewayUrl.value=c.gateway_base_url||'';speakerVolume.value=c.speaker_volume||200;speakerVolumeLabel.textContent=speakerVolume.value;micMagnification.value=c.mic_magnification||16;micMagnificationLabel.textContent=micMagnification.value;micNoiseFilter.value=c.mic_noise_filter_level||0;micNoiseFilterLabel.textContent=micNoiseFilter.value;vadPrefixPadding.value=c.vad_prefix_padding_ms||300;vadPrefixPaddingLabel.textContent=vadPrefixPadding.value;vadSilenceDuration.value=c.vad_silence_duration_ms||350;vadSilenceDurationLabel.textContent=vadSilenceDuration.value;vadStartSensitivityHigh.checked=c.vad_start_sensitivity_high!==false;vadEndSensitivityLow.checked=c.vad_end_sensitivity_low===true;vadTurnIncludesAllInput.checked=c.vad_turn_includes_all_input!==false;const firstSetup=(c.wifi_ssid!=='set'&&c.wifi_password!=='set');wifiEnabled.checked=firstSetup?true:!!c.wifi_enabled;webEnabled.checked=firstSetup?true:!!c.web_enabled;geminiEnabled.checked=!!c.gemini_enabled;gatewayEnabled.checked=!!c.gateway_enabled;show('status',c)}
-async function saveRuntime(reboot){show('status',await jpost('/api/runtime',{robot_id:robotId.value,gemini_model:geminiModel.value,gemini_voice:geminiVoice.value,wifi_ssid:wifiSsid.value,gateway_base_url:gatewayUrl.value,speaker_volume:Number(speakerVolume.value),mic_magnification:Number(micMagnification.value),mic_noise_filter_level:Number(micNoiseFilter.value),vad_prefix_padding_ms:Number(vadPrefixPadding.value),vad_silence_duration_ms:Number(vadSilenceDuration.value),vad_start_sensitivity_high:vadStartSensitivityHigh.checked,vad_end_sensitivity_low:vadEndSensitivityLow.checked,vad_turn_includes_all_input:vadTurnIncludesAllInput.checked,wifi_enabled:wifiEnabled.checked,web_enabled:webEnabled.checked,gemini_enabled:geminiEnabled.checked,gateway_enabled:gatewayEnabled.checked,reboot:!!reboot}))}
+async function loadRuntime(){const c=await jget('/api/runtime');robotId.value=c.robot_id||'stackchan';geminiModel.value=c.gemini_model||'';geminiVoice.value=c.gemini_voice||'Aoede';timezoneOffset.value=c.timezone_offset!==undefined?String(c.timezone_offset):"-3";wifiSsid.value='';wifiSsid.placeholder=c.wifi_ssid==='set'?'SSID is already stored; leave empty to keep it':'enter SSID';gatewayUrl.value=c.gateway_base_url||'';speakerVolume.value=c.speaker_volume||200;speakerVolumeLabel.textContent=speakerVolume.value;micMagnification.value=c.mic_magnification||16;micMagnificationLabel.textContent=micMagnification.value;micNoiseFilter.value=c.mic_noise_filter_level||0;micNoiseFilterLabel.textContent=micNoiseFilter.value;vadPrefixPadding.value=c.vad_prefix_padding_ms||300;vadPrefixPaddingLabel.textContent=vadPrefixPadding.value;vadSilenceDuration.value=c.vad_silence_duration_ms||350;vadSilenceDurationLabel.textContent=vadSilenceDuration.value;vadStartSensitivityHigh.checked=c.vad_start_sensitivity_high!==false;vadEndSensitivityLow.checked=c.vad_end_sensitivity_low===true;vadTurnIncludesAllInput.checked=c.vad_turn_includes_all_input!==false;const firstSetup=(c.wifi_ssid!=='set'&&c.wifi_password!=='set');wifiEnabled.checked=firstSetup?true:!!c.wifi_enabled;webEnabled.checked=firstSetup?true:!!c.web_enabled;geminiEnabled.checked=!!c.gemini_enabled;gatewayEnabled.checked=!!c.gateway_enabled;show('status',c)}
+async function saveRuntime(reboot){show('status',await jpost('/api/runtime',{robot_id:robotId.value,gemini_model:geminiModel.value,gemini_voice:geminiVoice.value,timezone_offset:Number(timezoneOffset.value),wifi_ssid:wifiSsid.value,gateway_base_url:gatewayUrl.value,speaker_volume:Number(speakerVolume.value),mic_magnification:Number(micMagnification.value),mic_noise_filter_level:Number(micNoiseFilter.value),vad_prefix_padding_ms:Number(vadPrefixPadding.value),vad_silence_duration_ms:Number(vadSilenceDuration.value),vad_start_sensitivity_high:vadStartSensitivityHigh.checked,vad_end_sensitivity_low:vadEndSensitivityLow.checked,vad_turn_includes_all_input:vadTurnIncludesAllInput.checked,wifi_enabled:wifiEnabled.checked,web_enabled:webEnabled.checked,gemini_enabled:geminiEnabled.checked,gateway_enabled:gatewayEnabled.checked,reboot:!!reboot}))}
 async function loadConfig(){await loadRuntime()}
 async function saveConfig(){await saveRuntime()}
 async function saveSecrets(){show('status',await jpost('/api/secrets',{gemini_api_key:geminiKey.value,gateway_token:gatewayToken.value,wifi_password:wifiPassword.value,calendar_url:calendarUrl.value}));geminiKey.value='';gatewayToken.value='';wifiPassword.value='';calendarUrl.value=''}
@@ -345,6 +351,20 @@ void WebConfigServer::registerRoutes() {
   server_.on("/api/camera/latest.jpg", HTTP_GET, [this]() { if (requireAuth()) handleCameraJpeg(); });
   server_.on("/api/sensors", HTTP_GET, [this]() { if (requireAuth()) handleSensors(); });
   server_.on("/api/sensors/readings", HTTP_GET, [this]() { if (requireAuth()) handleSensors(); });
+  server_.on("/api/calendar/status", HTTP_GET, [this]() {
+    if (!requireAuth()) return;
+    server_.send(200, "application/json", googleCalendar.fetchDailyAgendaJson());
+  });
+  server_.on("/api/calendar/refresh", HTTP_GET, [this]() {
+    if (!requireAuth()) return;
+    googleCalendar.prefetch(true);
+    server_.send(200, "application/json", googleCalendar.fetchDailyAgendaJson());
+  });
+  server_.on("/api/calendar/refresh", HTTP_POST, [this]() {
+    if (!requireAuth()) return;
+    googleCalendar.prefetch(true);
+    server_.send(200, "application/json", googleCalendar.fetchDailyAgendaJson());
+  });
   server_.onNotFound([this]() { if (requireAuth()) handleNotFound(); });
 }
 
@@ -503,6 +523,26 @@ void WebConfigServer::handleStatus() {
   touch["front"] = intensities[0];
   touch["middle"] = intensities[1];
   touch["back"] = intensities[2];
+
+  time_t nowSec = time(nullptr);
+  struct tm timeInfo {};
+  localtime_r(&nowSec, &timeInfo);
+  if (timeInfo.tm_year >= (2024 - 1900)) {
+    static const char* const weekdaysPt[] = {
+      "domingo", "segunda-feira", "terça-feira", "quarta-feira",
+      "quinta-feira", "sexta-feira", "sábado"
+    };
+    int wday = timeInfo.tm_wday;
+    const char* weekday = (wday >= 0 && wday <= 6) ? weekdaysPt[wday] : "desconhecido";
+    char dtBuf[64];
+    snprintf(dtBuf, sizeof(dtBuf), "%02d:%02d | %s, %02d/%02d/%04d",
+             timeInfo.tm_hour, timeInfo.tm_min, weekday,
+             timeInfo.tm_mday, timeInfo.tm_mon + 1, timeInfo.tm_year + 1900);
+    doc["formatted_datetime"] = dtBuf;
+  } else {
+    doc["formatted_datetime"] = "--:-- | relógio não sincronizado";
+  }
+
   sendJson(200, doc);
 }
 
@@ -511,6 +551,8 @@ void WebConfigServer::handleRuntimeGet() {
   doc["robot_id"] = config_.robotId;
   doc["gemini_model"] = "models/gemini-3.1-flash-live-preview";
   doc["gemini_voice"] = "Puck";
+  doc["timezone_offset"] = -3;
+  doc["timezone_name"] = "UTC-3";
   doc["wifi_enabled"] = false;
   doc["web_enabled"] = enabled_;
   doc["gemini_enabled"] = false;
@@ -533,6 +575,8 @@ void WebConfigServer::handleRuntimeGet() {
       doc["robot_id"] = cfg["robot_id"] | doc["robot_id"];
       doc["gemini_model"] = cfg["gemini_model"] | doc["gemini_model"];
       doc["gemini_voice"] = cfg["gemini_voice"] | doc["gemini_voice"];
+      doc["timezone_offset"] = cfg["timezone_offset"] | -3;
+      doc["timezone_name"] = cfg["timezone_name"] | "UTC-3";
       doc["wifi_enabled"] = cfg["wifi_enabled"] | false;
       doc["web_enabled"] = cfg["web_enabled"] | enabled_;
       doc["gemini_enabled"] = cfg["gemini_enabled"] | false;
@@ -581,6 +625,14 @@ void WebConfigServer::handleRuntimeSave() {
   cfg["robot_id"] = in["robot_id"] | (cfg["robot_id"] | config_.robotId);
   cfg["gemini_model"] = in["gemini_model"] | (cfg["gemini_model"] | "models/gemini-3.1-flash-live-preview");
   cfg["gemini_voice"] = in["gemini_voice"] | (cfg["gemini_voice"] | "Puck");
+  int tzOff = in["timezone_offset"] | (cfg["timezone_offset"] | -3);
+  if (tzOff < -12) tzOff = -12;
+  if (tzOff > 14) tzOff = 14;
+  cfg["timezone_offset"] = tzOff;
+  char tzName[16];
+  snprintf(tzName, sizeof(tzName), "UTC%+d", tzOff);
+  cfg["timezone_name"] = in["timezone_name"] | (cfg["timezone_name"] | tzName);
+  ConfigManager::applyTimezone(static_cast<int8_t>(tzOff));
   cfg["gateway_base_url"] = in["gateway_base_url"] | (cfg["gateway_base_url"] | "");
   cfg["wifi_enabled"] = in["wifi_enabled"] | (cfg["wifi_enabled"] | false);
   cfg["web_enabled"] = in["web_enabled"] | (cfg["web_enabled"] | enabled_);
@@ -630,6 +682,8 @@ void WebConfigServer::handleRuntimeSave() {
   out["saved"] = kRuntimeConfigPath;
   out["gateway_config_synced"] = gatewayOk;
   out["apply"] = "reboot_required";
+  out["timezone_offset"] = tzOff;
+  out["timezone_name"] = cfg["timezone_name"];
   out["speaker_volume"] = cfg["speaker_volume"] | 200;
   out["mic_magnification"] = cfg["mic_magnification"] | 16;
   out["mic_noise_filter_level"] = cfg["mic_noise_filter_level"] | 0;

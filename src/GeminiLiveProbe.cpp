@@ -817,7 +817,7 @@ void GeminiLiveProbe::sendSetup() {
       "3. NUNCA salve senhas, PINs ou segredos em remember_fact (se o usuário pedir expressamente para guardar segredos, use remember_private_memory). "
       "4. Quando o usuário perguntar sobre o nome dele, preferências ou fatos passados ('qual é o meu nome?', 'quem te criou?'), chame SEMPRE search_memory antes de responder se a informação não estiver evidente nos seus fatos conhecidos. Nunca invente ou afirme que lembra sem consultar search_memory. "
       "DATA, HORA E DIA DA SEMANA: "
-      "Quando o usuário perguntar que horas são, que dia é hoje, qual o dia da semana ou qualquer pergunta sobre data/hora atual ('que horas são?', 'que dia é hoje?', 'que dia da semana é hoje?', 'qual a data e hora agora?'), CHAME OBRIGATORIAMENTE a ferramenta get_current_datetime antes de responder. Nunca invente ou chute horários ou datas sem consultar get_current_datetime.";
+      "Quando o usuário perguntar que horas são, que dia é hoje, qual o dia da semana ou qualquer pergunta sobre data/hora atual ('que horas são?', 'que dia é hoje?', 'que dia da semana é hoje?', 'qual a data e hora agora?'), CHAME OBRIGATORIAMENTE a ferramenta get_current_datetime antes de responder. Nunca invente ou chute horários ou datas sem consultar get_current_datetime. A resposta de get_current_datetime JÁ CONTÉM a hora e a data locais finais e exatas; fale diretamente a hora e data informadas pela ferramenta, NUNCA aplique recálculo ou conversão de fuso horário por conta própria.";
   if (system_prompt_.length()) {
     instruction += " Additional system prompt from SD/Web UI: ";
     instruction += system_prompt_;

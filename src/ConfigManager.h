@@ -27,7 +27,9 @@ class ConfigManager {
     uint16_t vadSilenceDurationMs = 280;
     bool vadStartSensitivityHigh = false; // START_SENSITIVITY_LOW (Consolidated post-audio)
     bool vadEndSensitivityLow = false; // END_SENSITIVITY_HIGH for immediate conversational turn
-    bool vadTurnIncludesAllInput = true; // Patch 4 baseline
+    bool vadTurnIncludesAllInput = true;
+    int8_t timezoneOffset = -3;
+    String timezoneName = "UTC-3";
     String systemPrompt;
     String personaPrompt;
   };
@@ -54,6 +56,8 @@ class ConfigManager {
 
   String redactedStatusJson() const;
   void printRedactedStatus(Stream& out) const;
+
+  static void applyTimezone(int8_t offsetHours);
 
  private:
   fs::FS& fs_;

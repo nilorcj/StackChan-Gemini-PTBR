@@ -86,6 +86,12 @@ bool ConfigManager::loadJsonConfig(const char* path) {
   config_.vadEndSensitivityLow = false; // Always use END_SENSITIVITY_HIGH so Gemini responds immediately when user stops speaking
   config_.vadTurnIncludesAllInput = asBool(doc["vad_turn_includes_all_input"], config_.vadTurnIncludesAllInput);
 
+  int tzOff = doc["timezone_offset"] | config_.timezoneOffset;
+  if (tzOff < -12) tzOff = -12;
+  if (tzOff > 14) tzOff = 14;
+  config_.timezoneOffset = static_cast<int8_t>(tzOff);
+  config_.timezoneName = doc["timezone_name"] | config_.timezoneName;
+
   config_.wifiEnabled = asBool(doc["wifi_enabled"], config_.wifiEnabled);
   config_.geminiEnabled = asBool(doc["gemini_enabled"], config_.geminiEnabled);
   config_.gatewayEnabled = asBool(doc["gateway_enabled"], config_.gatewayEnabled);
@@ -149,11 +155,29 @@ String ConfigManager::redactedStatusJson() const {
   doc["vad_start_sensitivity_high"] = config_.vadStartSensitivityHigh;
   doc["vad_end_sensitivity_low"] = config_.vadEndSensitivityLow;
   doc["vad_turn_includes_all_input"] = config_.vadTurnIncludesAllInput;
+  doc["timezone_offset"] = config_.timezoneOffset;
+  doc["timezone_name"] = config_.timezoneName;
   doc["system_prompt"] = config_.systemPrompt.length() ? "set" : "missing";
   doc["persona_prompt"] = config_.personaPrompt.length() ? "set" : "missing";
   String out;
   serializeJson(doc, out);
   return out;
+}
+
+void ConfigManager::applyTimezone(int8_t offsetHours) {
+  char tzBuf[32];
+  if (offsetHours == 0) {
+    snprintf(tzBuf, sizeof(tzBuf), "UTC0");
+  } else if (offsetHours < 0) {
+    // POSIX offset is positive for west of Prime Meridian (e.g. UTC-3 -> <UTC-3>3)
+    snprintf(tzBuf, sizeof(tzBuf), "<UTC%d>%d", offsetHours, -offsetHours);
+  } else {
+    // POSIX offset is negative for east of Prime Meridian (e.g. UTC+1 -> <UTC+1>-1)
+    snprintf(tzBuf, sizeof(tzBuf), "<UTC+%d>%d", offsetHours, -offsetHours);
+  }
+  setenv("TZ", tzBuf, 1);
+  tzset();
+  Serial.printf("Time: applied timezone offset %d (%s)\n", offsetHours, tzBuf);
 }
 
 void ConfigManager::printRedactedStatus(Stream& out) const {

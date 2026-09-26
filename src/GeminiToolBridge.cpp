@@ -4,6 +4,7 @@
 #include "UnitPaHubManager.h"
 #include "LiveFeedsManager.h"
 #include "GoogleCalendarClient.h"
+#include "ConfigManager.h"
 #include <M5Unified.h>
 #include <M5StackChan.h>
 #include <WiFi.h>
@@ -27,7 +28,7 @@ String GeminiToolBridge::functionDeclarationsJson() {
 
   noArgTool("get_robot_status", "Get StackChan robot status: battery, network, state, and local memory health.");
   noArgTool("get_sensor_readings", "Read the real sensors connected to StackChan: distance, temperature, humidity, and atmospheric pressure.");
-  noArgTool("get_current_datetime", "Consulta a data e o horário atual no relógio local da Pix sincronizado via NTP. Retorna ano, mês, dia, hora, minuto, segundo, dia da semana e fuso horário. Use sempre que o usuário perguntar que horas são, que dia é hoje, qual o dia da semana ou qualquer pergunta sobre data e hora atual.");
+  noArgTool("get_current_datetime", "Consulta a data e o horário atual no relógio local oficial da Pix. Retorna a hora_local, data_local, dia_da_semana e fuso_horario. IMPORTANTE: os valores retornados já são o horário e data locais finais prontos para falar ao usuário; não faça nenhum cálculo ou conversão de fuso horário adicional. Use sempre que o usuário perguntar que horas são, que dia é hoje, dia da semana ou qualquer pergunta sobre data e hora atual.");
 
   auto volControl = arr.add<JsonObject>();
   volControl["name"] = "set_speaker_volume";
@@ -318,9 +319,13 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
       return LocalStatus::Handled;
     }
 
-    // Sync RTC with valid time for offline resilience
+    // Sync RTC with valid UTC time for offline resilience
     if (M5.Rtc.isEnabled()) {
-      M5.Rtc.setDateTime(&timeInfo);
+      time_t nowSec = time(nullptr);
+      struct tm utcTm;
+      if (gmtime_r(&nowSec, &utcTm)) {
+        M5.Rtc.setDateTime(&utcTm);
+      }
     }
 
     static const char* const weekdaysPt[] = {
@@ -330,18 +335,32 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
 
     char dateBuf[16];
     char timeBuf[16];
+    char timeExtensoBuf[32];
     snprintf(dateBuf, sizeof(dateBuf), "%04d-%02d-%02d", timeInfo.tm_year + 1900, timeInfo.tm_mon + 1, timeInfo.tm_mday);
     snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d", timeInfo.tm_hour, timeInfo.tm_min, timeInfo.tm_sec);
+    snprintf(timeExtensoBuf, sizeof(timeExtensoBuf), "%02dh%02d", timeInfo.tm_hour, timeInfo.tm_min);
 
     int wday = timeInfo.tm_wday;
     const char* weekday = (wday >= 0 && wday <= 6) ? weekdaysPt[wday] : "desconhecido";
 
+    int8_t tzOffset = configManager_ ? configManager_->config().timezoneOffset : -3;
+    String tzName = configManager_ ? configManager_->config().timezoneName : "UTC-3";
+    char offsetBuf[10];
+    snprintf(offsetBuf, sizeof(offsetBuf), "%c%02d:00", (tzOffset >= 0 ? '+' : '-'), abs(tzOffset));
+
     response["ok"] = true;
+    response["hora_local"] = timeBuf;
+    response["hora_formatada"] = timeExtensoBuf;
+    response["data_local"] = dateBuf;
+    response["dia_da_semana"] = weekday;
+    response["fuso_horario"] = tzName;
+    // Legacy keys for compatibility
     response["date"] = dateBuf;
     response["time"] = timeBuf;
     response["weekday"] = weekday;
-    response["timezone"] = "America/Sao_Paulo";
-    response["utc_offset"] = "-03:00";
+    response["timezone"] = tzName;
+    response["utc_offset"] = offsetBuf;
+    response["instrucao"] = "Estes valores JÁ SÃO a hora e data locais exatas da Pix. Diga este horário diretamente ao usuário sem converter ou recalcular fuso.";
     return LocalStatus::Handled;
   }
 
