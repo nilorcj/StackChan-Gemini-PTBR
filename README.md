@@ -96,18 +96,98 @@ pio device monitor -b 115200
 
 ---
 
-## 🌐 Painel Web e Acesso Inicial
+## 🌐 Configuração de Wi-Fi e Acesso ao Web Viewer
 
-Se o Wi-Fi ainda não estiver configurado no SD, o robô criará automaticamente uma rede de configuração:
-* **SSID:** `<robot_id>-setup-XXXX`
-* **Senha:** `stackchanXXXX`
-* **Endereço do Painel:** `http://192.168.4.1/`
+Esta seção explica passo a passo como conectar a Pix à sua rede Wi-Fi, como funciona a rede de emergência quando ela não encontra o roteador e como acessar o painel de controle (Web Viewer).
 
-Após conectar à sua rede Wi-Fi local, acesse diretamente o endereço IP atribuído ao Stack-chan para:
-* Visualizar diagnósticos dos sensores (ToF, ENV, I2C PaHub).
-* Testar movimentos dos servos e feedback tátil.
-* Acompanhar transcrições de voz e memória de eventos.
-* Configurar senhas e credenciais com segurança HTTP Basic Auth.
+### 1. Comportamento e Modos de Operação
+
+A Pix opera em dois modos distintos de rede:
+
+* **Modo Normal (Conectada ao Roteador Doméstico / 2.4 GHz):**
+  * Quando a Pix encontra o Wi-Fi configurado, ela se conecta automaticamente durante os 15 segundos da tela de boot e recebe um endereço IP local dinâmico via DHCP (ex.: `192.168.1.105` ou `10.0.0.45`).
+  * O Gemini Live, os sensores e a sincronização de data/hora/agenda tornam-se plenamente operacionais.
+  * O Web Viewer fica acessível diretamente pelo endereço IP local do robô na rede da sua casa (ex.: `http://192.168.1.105/`).
+* **Modo Ponto de Acesso de Configuração (Fallback / Emergência):**
+  * Se o Wi-Fi configurado não for encontrado após a tela de boot (15 segundos) ou se for a primeira vez que você liga a Pix sem configurar o SD, ela entra automaticamente em modo **SoftAP**.
+  * A Pix cria uma rede Wi-Fi própria temporária para que você possa se conectar via celular ou notebook e configurar a rede da sua casa.
+  * Neste modo, não há conexão com a internet (o Gemini Live permanece offline até que uma rede válida seja configurada e a Pix seja reiniciada).
+
+---
+
+### 2. Rede de Configuração (Modo AP) — Dados de Conexão
+
+Quando a Pix estiver no modo de configuração, conecte seu smartphone ou computador à rede Wi-Fi gerada por ela:
+
+* **Nome da Rede (SSID):** `<robot_id>-setup-XXXX` (padrão: `stackchan-setup-XXXX` ou `pix-setup-XXXX`).
+  > **O que é o `XXXX`?** São os últimos 4 caracteres hexadecimais do endereço físico (MAC) do chip ESP32-S3 da sua placa (ex.: `stackchan-setup-4190`).
+* **Senha do Wi-Fi:** `stackchanXXXX`
+  > **Como saber a senha correta:** A senha é sempre a palavra `stackchan` em letras minúsculas seguida **exatamente pelos mesmos 4 caracteres que aparecem no final do nome da rede**.
+  > *Exemplo prático:* se o seu celular encontrar a rede `stackchan-setup-4190`, a senha dessa rede será `stackchan4190`.
+* **Endereço IP do AP:** `192.168.4.1` (IP padrão fixo da Pix).
+* **Porta:** `80` (porta HTTP padrão).
+* **Como acessar:** Conecte o celular ou computador à rede da Pix e abra o navegador no endereço:
+  ```text
+  http://192.168.4.1/
+  ```
+
+---
+
+### 3. Como Descobrir o IP da Pix na Rede Doméstica
+
+A Pix **não utiliza mDNS nem nome de domínio** (não há suporte a `pix.local` ou `stackchan.local`); o acesso é realizado **sempre pelo endereço IP numérico**.
+
+Para descobrir o IP da Pix quando ela estiver conectada ao seu roteador:
+1. **Diretamente na tela da Pix (Dashboard de Boot):**
+   * Ao ligar a Pix, a tela inicial de diagnóstico é exibida por 15 segundos.
+   * No card superior esquerdo (**Wi-Fi**), quando a conexão for estabelecida, aparecerá o status verde **`OK`** e logo abaixo o **endereço IP atribuído** (ex.: `192.168.1.105`).
+2. **Pelo Monitor Serial USB:**
+   * Se a Pix estiver conectada ao computador via cabo USB a 115200 baud, o log de inicialização exibirá:
+     ```text
+     WiFi: connected during boot screen! ip=192.168.X.X dns=...
+     ```
+3. **Pela lista de clientes do seu roteador:**
+   * Acesse o painel do seu roteador e procure pelo dispositivo ESP32-S3 (prefixo de MAC iniciado por `80:45:6B:...` ou similar).
+
+---
+
+### 4. Como Acessar o Web Viewer e o que ele oferece
+
+Com a Pix conectada ao seu Wi-Fi e seu computador/smartphone no mesmo roteador:
+* **Painel Principal:** `http://<IP_DA_PIX>/` (ex.: `http://192.168.1.105/`)
+* **Página de Diagnóstico de Sensores:** `http://<IP_DA_PIX>/sensors`
+
+O Web Viewer oferece controle total através de abas:
+* **Status:** Telemetria em tempo real de bateria, memória livre (Heap e PSRAM), estado do Gemini Live (pronto, ouvindo, falando), chunks de áudio e status dos microfones.
+* **Runtime:** Configuração do volume do alto-falante, ganho do microfone (1 a 24), filtro de ruído, modelo de IA (`geminiModel`), voz sintetizada (`geminiVoice`), fuso horário (`timezoneOffset`) e nome da rede Wi-Fi (`Wi-Fi SSID`).
+* **Secrets:** Armazenamento seguro de chaves e senhas (senha do Wi-Fi, Gemini API Key e URL da agenda do Google Calendar `.ics`). Os segredos são gravados no MicroSD e **nunca são exibidos de volta pelo navegador ou API**.
+* **Security:** Configuração opcional de senha para proteger o painel web via HTTP Basic Auth (usuário padrão: `stackchan`). Se nenhuma senha for cadastrada, o painel permanece aberto na rede local.
+* **Gateway:** Teste e validação de ferramentas externas conectadas via Tool Gateway.
+* **Prompts:** Adição de instruções de comportamento e personalidade adicionais à Pix.
+* **Memory:** Visualização de diálogos recentes, resumos periódicos e busca semântica no banco de memória local.
+
+---
+
+### Troca rápida de Wi-Fi
+
+Se você levou a Pix para outra casa, escritório ou trocou a senha/roteador Wi-Fi:
+
+#### Método 1 — Pela Rede de Configuração da Pix (Sem computador / Sem retirar o MicroSD)
+1. Ligue a Pix no novo local.
+2. Como ela não encontrará a rede antiga, após os 15 segundos da tela de boot ela entrará em modo AP e criará a rede `stackchan-setup-XXXX`.
+3. No celular ou notebook, conecte-se a essa rede Wi-Fi usando a senha `stackchanXXXX` (onde `XXXX` são os 4 dígitos finais do nome da rede).
+4. Abra o navegador em `http://192.168.4.1/`.
+5. Vá até a aba **Runtime**, localize o campo **Wi-Fi SSID** e digite o nome exato da nova rede Wi-Fi (compatível com 2.4 GHz).
+6. Vá até a aba **Secrets**, localize o campo **Wi-Fi password** e digite a nova senha da rede. Clique em **Save secrets**.
+7. Volte à aba **Runtime** e clique no botão vermelho **Save and reboot** (ou reinicie a Pix no botão lateral de energia).
+8. A Pix reiniciará conectando-se ao novo roteador e exibirá o novo IP na tela de boot!
+
+#### Método 2 — Pelo Cartão MicroSD (Offline no PC)
+1. Desligue a Pix e retire o cartão MicroSD.
+2. Conecte o cartão ao computador:
+   * Abra o arquivo `/app/StackChan/config/runtime.json` e altere o campo `"wifi_ssid": "NomeDaNovaRede"`.
+   * Abra o arquivo `/app/StackChan/secrets/wifi_password.txt` e substitua o texto pela nova senha do Wi-Fi (sem espaços ou quebras de linha adicionais).
+3. Insira o MicroSD de volta na Pix e ligue o robô.
 
 ---
 
