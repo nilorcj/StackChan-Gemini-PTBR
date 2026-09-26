@@ -324,6 +324,7 @@ static void ntpTimeSyncNotificationCallback(struct timeval* tv) {
                   utcTm.tm_year + 1900, utcTm.tm_mon + 1, utcTm.tm_mday,
                   utcTm.tm_hour, utcTm.tm_min, utcTm.tm_sec);
   }
+  emotion.requestFaceRedraw();
 }
 
 static void configureNtpOnce() {
@@ -482,7 +483,7 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
       break;
     }
 
-    // Handle Wi-Fi connection concurrently
+    // Handle Wi-Fi connection concurrently (100% non-blocking)
     bool isWifi = (WiFi.status() == WL_CONNECTED);
     if (!wifiConnectedBefore && isWifi) {
       wifiConnectedBefore = true;
@@ -492,19 +493,7 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
       Serial.printf("WiFi: connected during boot screen! ip=%s dns=%s\n",
                     WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
       configureNtpOnce();
-      // Wait up to 3500ms for NTP to synchronize so date/time is 100% accurate before prefetch!
-      uint32_t ntpWaitStart = millis();
-      while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && (millis() - ntpWaitStart < 3500)) {
-        delay(50);
-      }
-      time_t curSec = time(nullptr);
-      struct tm curTm {};
-      localtime_r(&curSec, &curTm);
-      Serial.printf("Time: post-NTP sync status=%d local_time=%02d:%02d %02d/%02d/%04d\n",
-                    static_cast<int>(sntp_get_sync_status()),
-                    curTm.tm_hour, curTm.tm_min, curTm.tm_mday, curTm.tm_mon + 1, curTm.tm_year + 1900);
       liveFeeds.triggerBootPrefetch();
-      googleCalendar.prefetch(true);
       webConfig.begin(configManager.webConfig());
       if (geminiConfigured && !geminiConnectTriggered) {
         geminiConnectTriggered = true;

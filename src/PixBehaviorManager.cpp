@@ -53,27 +53,51 @@ BehaviorDecision PixBehaviorManager::decidePresence(uint32_t nowMs) {
     return BehaviorDecision::NO_ACTION;
   }
 
-  // Ajustes de estado sutis por evento de chegada
+  // Ajustes de estado sutis por evento de chegada (incremento lento, limitado a 100)
   if (curiosity_ <= 97) curiosity_ += 3; else curiosity_ = 100;
   if (affection_ <= 98) affection_ += 2; else affection_ = 100;
   if (energy_ <= 98) energy_ += 2; else energy_ = 100;
 
-  // Distribuicao moderada: 50% NO_ACTION (sem carencia), 22% LOOK_AT_USER, 16% CURIOUS_TILT, 12% HAPPY_SHORT
+  // Influencia de energia no limiar de iniciativa (50% base, variando de 35% a 70%)
+  // Menor energia -> maior probabilidade de NO_ACTION (menos iniciativa)
+  int noActionThreshold = 50 + (50 - static_cast<int>(energy_)) * 4 / 10;
+  if (noActionThreshold < 35) noActionThreshold = 35;
+  if (noActionThreshold > 70) noActionThreshold = 70;
+
   uint32_t roll = esp_random() % 100;
   BehaviorDecision decision = BehaviorDecision::NO_ACTION;
 
-  if (roll < 50) {
+  if (roll < static_cast<uint32_t>(noActionThreshold)) {
     decision = BehaviorDecision::NO_ACTION;
     lastPresenceReactionMs_ = nowMs;
     presenceCooldownMs_ = 6000 + (esp_random() % 4001); // 6-10s antes da proxima avaliacao se ignorada
     logDecision("PRESENCE", decision);
     return BehaviorDecision::NO_ACTION;
-  } else if (roll < 72) {
-    decision = BehaviorDecision::LOOK_AT_USER; // 22%
-  } else if (roll < 88) {
-    decision = BehaviorDecision::CURIOUS_TILT; // 16%
+  }
+
+  // Pesos dinamicos com base nos estados internos
+  // Base: Look=35, Tilt=25, Happy=15
+  int wLook = 35;
+  int wTilt = 25 + ((curiosity_ > 50) ? (curiosity_ - 50) * 5 / 10 : 0);
+  int wHappy = 15 + ((affection_ > 50) ? (affection_ - 50) * 6 / 10 : 0);
+
+  // Baixa energia favorece gestos discretos (LOOK_AT_USER) sobre animacoes expansivas
+  if (energy_ < 40) {
+    wLook += 15;
+    wTilt = (wTilt * 7) / 10;
+    wHappy = (wHappy * 5) / 10;
+  }
+
+  int totalWeight = wLook + wTilt + wHappy;
+  if (totalWeight <= 0) totalWeight = 1;
+  uint32_t actionRoll = esp_random() % totalWeight;
+
+  if (actionRoll < static_cast<uint32_t>(wLook)) {
+    decision = BehaviorDecision::LOOK_AT_USER;
+  } else if (actionRoll < static_cast<uint32_t>(wLook + wTilt)) {
+    decision = BehaviorDecision::CURIOUS_TILT;
   } else {
-    decision = BehaviorDecision::HAPPY_SHORT;  // 12% (sorriso sutil)
+    decision = BehaviorDecision::HAPPY_SHORT;
   }
 
   lastPresenceReactionMs_ = nowMs;
@@ -109,12 +133,27 @@ BehaviorDecision PixBehaviorManager::decideIdle(uint32_t nowMs) {
   // Acoes espontaneas raras: apenas se cooldown de 18-30s tiver expirado
   bool canSpontaneous = (nowMs - lastSpontaneousActionMs_ >= spontaneousCooldownMs_);
   if (canSpontaneous) {
-    uint32_t rollSpontaneous = esp_random() % 100;
-    if (rollSpontaneous < 22) { // 22% de chance quando elegivel -> raro e organico
-      lastSpontaneousActionMs_ = nowMs;
-      spontaneousCooldownMs_ = 18000 + (esp_random() % 12001); // Cooldown rigoroso de 18-30s
+    // Probabilidade modulada sutilmente pela energia (entre 8% e 28%, base 22%)
+    int spontaneousChance = 22 + (static_cast<int>(energy_) - 50) * 15 / 100;
+    if (spontaneousChance < 8) spontaneousChance = 8;
+    if (spontaneousChance > 28) spontaneousChance = 28;
 
-      BehaviorDecision decision = (esp_random() % 2 == 0) ? BehaviorDecision::LOOK_AT_USER : BehaviorDecision::CURIOUS_TILT;
+    uint32_t rollSpontaneous = esp_random() % 100;
+    if (rollSpontaneous < static_cast<uint32_t>(spontaneousChance)) {
+      lastSpontaneousActionMs_ = nowMs;
+      spontaneousCooldownMs_ = 18000 + (esp_random() % 12001); // Cooldown rigoroso de 18-30s preservado
+
+      BehaviorDecision decision = BehaviorDecision::LOOK_AT_USER;
+      // Alta afeicao da chance de um sorriso sutil espontaneo
+      if (affection_ >= 65 && (esp_random() % 100) < 35) {
+        decision = BehaviorDecision::HAPPY_SHORT;
+      } else if (curiosity_ >= 60) {
+        // Alta curiosidade favorece olhar ou inclinacao curiosa
+        decision = (esp_random() % 100 < 65) ? BehaviorDecision::CURIOUS_TILT : BehaviorDecision::LOOK_AT_USER;
+      } else {
+        decision = (esp_random() % 2 == 0) ? BehaviorDecision::LOOK_AT_USER : BehaviorDecision::CURIOUS_TILT;
+      }
+
       logDecision("IDLE_SPONTANEOUS", decision);
       return decision;
     }
@@ -138,9 +177,16 @@ void PixBehaviorManager::update(uint32_t nowMs) {
 
   if (nowMs - lastDecayMs_ >= 15000) {
     lastDecayMs_ = nowMs;
-    if (energy_ > 20) energy_--;
+    // Energia decai suavemente em repouso ate o patamar calmo (30)
+    if (energy_ > 30) energy_--;
+    else if (energy_ < 30) energy_++;
+
+    // Curiosidade busca equilibrio em 50
     if (curiosity_ > 50) curiosity_--;
     else if (curiosity_ < 50) curiosity_++;
-    if (affection_ > 40) affection_--;
+
+    // Afeicao decai lentamente ate patamar neutro/calmo (45)
+    if (affection_ > 45) affection_--;
+    else if (affection_ < 45) affection_++;
   }
 }

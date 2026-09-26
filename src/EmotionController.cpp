@@ -23,6 +23,129 @@ int triWave(uint16_t phase, int amplitude) {
   int v = p < 128 ? p : 255 - p;
   return ((v * 2 * amplitude) / 255) - amplitude;
 }
+
+// Latin-1 / UTF-8 compatible GLCD font wrapper for Font0.
+// Resolves missing Portuguese accented glyphs (á à â ã é ê í ó ô õ ú ç)
+// without replacing Font0 geometry or stripping accents.
+class Latin1GLCDFont : public lgfx::IFont {
+ public:
+  font_type_t getType(void) const override { return ft_glcd; }
+
+  void getDefaultMetric(lgfx::FontMetrics* metrics) const override {
+    fonts::Font0.getDefaultMetric(metrics);
+  }
+
+  bool updateFontMetric(lgfx::FontMetrics* metrics, uint16_t uniCode) const override {
+    if (uniCode <= 127) {
+      return fonts::Font0.updateFontMetric(metrics, uniCode);
+    }
+    if (getAccentBitmap(uniCode) != nullptr) {
+      metrics->width = 6;
+      metrics->x_advance = 6;
+      metrics->x_offset = 0;
+      metrics->height = 8;
+      metrics->y_advance = 8;
+      metrics->y_offset = 0;
+      metrics->baseline = 7;
+      return true;
+    }
+    return false;
+  }
+
+  size_t drawChar(lgfx::LGFXBase* gfx, int32_t x, int32_t y, uint16_t c,
+                  const lgfx::TextStyle* style, lgfx::FontMetrics* metrics,
+                  int32_t& filled_x) const override {
+    if (c <= 127) {
+      return fonts::Font0.drawChar(gfx, x, y, c, style, metrics, filled_x);
+    }
+
+    const uint8_t* font_addr = getAccentBitmap(c);
+    if (!font_addr) {
+      return drawCharDummy(gfx, x, y, 6, 8, style, filled_x);
+    }
+
+    const int32_t fontWidth = 6;
+    const int32_t fontHeight = 8;
+    const int32_t datawidth = 5;
+
+    auto cc = gfx->getColorConverter();
+    bool fillbg = (style->back_rgb888 != style->fore_rgb888);
+    uint32_t colortbl[2] = {cc->convert(style->back_rgb888), cc->convert(style->fore_rgb888)};
+
+    const int32_t sy = 65536 * style->size_y;
+    const int32_t sx = 65536 * style->size_x;
+
+    gfx->startWrite();
+
+    uint32_t x1 = 0;
+    int_fast8_t i = 0;
+    do {
+      uint_fast8_t line = font_addr[i];
+      uint_fast8_t flg = (line & 0x01);
+      int_fast8_t j = 1;
+      uint32_t y1 = 0;
+      uint32_t x0 = x1;
+      x1 = (++i * sx) >> 16;
+      uint32_t w = x1 - x0;
+      do {
+        while (flg == ((line >> j) & 0x01) && ++j < fontHeight);
+        uint32_t y0 = y1;
+        y1 = (j * sy) >> 16;
+        if (flg || fillbg) {
+          gfx->setRawColor(colortbl[flg]);
+          gfx->writeFillRect(x, y + y0, w, y1 - y0);
+        }
+        flg = !flg;
+      } while (j < fontHeight);
+      x += w;
+    } while (i < datawidth);
+
+    uint32_t x2 = (fontWidth * sx) >> 16;
+    if (fillbg && datawidth < fontWidth) {
+      gfx->setRawColor(colortbl[0]);
+      gfx->writeFillRect(x, y, x2 - (datawidth * sx >> 16), (fontHeight * sy) >> 16);
+    }
+
+    gfx->endWrite();
+    return x2;
+  }
+
+  static const uint8_t* getAccentBitmap(uint16_t c) {
+    switch (c) {
+      // Lowercase Portuguese accented letters
+      case 0x00E1: { static const uint8_t b[] = { 0x20, 0x54, 0x54, 0x79, 0x41 }; return b; } // á
+      case 0x00E0: { static const uint8_t b[] = { 0x21, 0x55, 0x54, 0x78, 0x40 }; return b; } // à
+      case 0x00E2: { static const uint8_t b[] = { 0x21, 0x55, 0x55, 0x79, 0x41 }; return b; } // â
+      case 0x00E3: { static const uint8_t b[] = { 0x20, 0x55, 0x57, 0x7A, 0x40 }; return b; } // ã
+      case 0x00E9: { static const uint8_t b[] = { 0x38, 0x54, 0x54, 0x55, 0x59 }; return b; } // é
+      case 0x00EA: { static const uint8_t b[] = { 0x39, 0x55, 0x55, 0x55, 0x59 }; return b; } // ê
+      case 0x00ED: { static const uint8_t b[] = { 0x00, 0x00, 0x44, 0x7D, 0x41 }; return b; } // í
+      case 0x00F3: { static const uint8_t b[] = { 0x30, 0x48, 0x48, 0x4A, 0x32 }; return b; } // ó
+      case 0x00F4: { static const uint8_t b[] = { 0x32, 0x49, 0x49, 0x49, 0x32 }; return b; } // ô
+      case 0x00F5: { static const uint8_t b[] = { 0x38, 0x45, 0x47, 0x46, 0x38 }; return b; } // õ
+      case 0x00FA: { static const uint8_t b[] = { 0x38, 0x40, 0x40, 0x22, 0x7A }; return b; } // ú
+      case 0x00E7: { static const uint8_t b[] = { 0x0C, 0x1E, 0x52, 0x72, 0x12 }; return b; } // ç
+
+      // Uppercase Portuguese accented letters
+      case 0x00C1: { static const uint8_t b[] = { 0x7C, 0x12, 0x11, 0x12, 0x7C }; return b; } // Á
+      case 0x00C0: { static const uint8_t b[] = { 0x7C, 0x11, 0x12, 0x12, 0x7C }; return b; } // À
+      case 0x00C2: { static const uint8_t b[] = { 0x7C, 0x13, 0x11, 0x13, 0x7C }; return b; } // Â
+      case 0x00C3: { static const uint8_t b[] = { 0x7C, 0x13, 0x12, 0x13, 0x7C }; return b; } // Ã
+      case 0x00C9: { static const uint8_t b[] = { 0x7C, 0x54, 0x55, 0x45, 0x00 }; return b; } // É
+      case 0x00CA: { static const uint8_t b[] = { 0x7C, 0x55, 0x55, 0x45, 0x00 }; return b; } // Ê
+      case 0x00CD: { static const uint8_t b[] = { 0x00, 0x41, 0x7D, 0x41, 0x00 }; return b; } // Í
+      case 0x00D3: { static const uint8_t b[] = { 0x38, 0x44, 0x45, 0x45, 0x38 }; return b; } // Ó
+      case 0x00D4: { static const uint8_t b[] = { 0x38, 0x45, 0x45, 0x45, 0x38 }; return b; } // Ô
+      case 0x00D5: { static const uint8_t b[] = { 0x38, 0x45, 0x46, 0x45, 0x38 }; return b; } // Õ
+      case 0x00DA: { static const uint8_t b[] = { 0x3C, 0x40, 0x40, 0x41, 0x3D }; return b; } // Ú
+      case 0x00C7: { static const uint8_t b[] = { 0x1E, 0xA1, 0xA1, 0x61, 0x12 }; return b; } // Ç
+
+      default: return nullptr;
+    }
+  }
+};
+
+static const Latin1GLCDFont s_latin1Font;
 }  // namespace
 
 void EmotionController::begin() {
@@ -729,6 +852,7 @@ void EmotionController::renderFullFace(LovyanGFX& display, const FaceState& s) {
     d.drawString(isDnd_ ? "NAO PERTURBE (TOQUE P/ SAIR)" : "TOQUE P/ ACORDAR", cx, h - 8);
   } else {
     drawMouth(canvas, cx, mouthY, s);
+    updateDateTimeStrip(d);
   }
 
   if (micActive_ && !physicalMute_) {
@@ -759,6 +883,30 @@ void EmotionController::renderFullFace(LovyanGFX& display, const FaceState& s) {
   canvas.pushSprite(&display, 0, 0);
   uint32_t fullPushMs = millis() - tFullPush0;
   Serial.printf("[DIAG:RENDER] FULL_PUSH_MS=%u\n", fullPushMs);
+}
+
+void EmotionController::updateDateTimeStrip(LovyanGFX& d) {
+  time_t nowSec = time(nullptr);
+  struct tm timeInfo {};
+  localtime_r(&nowSec, &timeInfo);
+  if (timeInfo.tm_year >= (2024 - 1900)) {
+    static const char* const weekdaysPt[] = {
+      "domingo", "segunda-feira", "terça-feira", "quarta-feira",
+      "quinta-feira", "sexta-feira", "sábado"
+    };
+    int wday = timeInfo.tm_wday;
+    const char* weekday = (wday >= 0 && wday <= 6) ? weekdaysPt[wday] : "";
+    char dtBuf[64];
+    snprintf(dtBuf, sizeof(dtBuf), "%02d:%02d | %s, %02d/%02d/%04d",
+             timeInfo.tm_hour, timeInfo.tm_min, weekday,
+             timeInfo.tm_mday, timeInfo.tm_mon + 1, timeInfo.tm_year + 1900);
+    d.setTextDatum(textdatum_t::bottom_center);
+    d.setTextSize(1);
+    d.setTextColor(0x9DF8); // Discreet lavender / light cyan
+    d.setFont(&s_latin1Font);
+    d.drawString(dtBuf, d.width() / 2, d.height() - 8);
+    d.setFont(&fonts::Font0);
+  }
 }
 
 void EmotionController::renderPartialFace(LovyanGFX& display, const FaceState& s) {
@@ -838,9 +986,17 @@ void EmotionController::renderFace() {
     fullRedraw = true;
   }
 
+  time_t curSec = time(nullptr);
+  struct tm curTm {};
+  localtime_r(&curSec, &curTm);
+  if (curTm.tm_year >= (2024 - 1900) && curTm.tm_min != lastRenderedMinute_) {
+    fullRedraw = true;
+  }
+
   if (fullRedraw) {
     renderFullFace(display, s);
     forceFullRedraw_ = false;
+    lastRenderedMinute_ = curTm.tm_min;
     lastRenderedMode_ = mode_;
     lastRenderedShaken_ = isShaken_;
     lastRenderedLifted_ = isLifted_;

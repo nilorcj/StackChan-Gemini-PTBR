@@ -112,6 +112,7 @@ class EmotionController {
 
   bool setEmotion(const String& emotion);
   const String& currentEmotion() const { return current_; }
+  void requestFaceRedraw() { forceFullRedraw_ = true; needsFaceRedraw_ = true; }
   void loop();
 
  private:
@@ -230,6 +231,7 @@ class EmotionController {
   bool lastClosed_ = false;
   int lastTalkShape_ = -1;
   int lastTalkYOffset_ = -1;
+  int lastRenderedMinute_ = -1;
 
   static Mode parseMode(const String& emotion, String& normalized);
   static void hsvToRgb(uint8_t h, uint8_t s, uint8_t v, uint8_t& r, uint8_t& g, uint8_t& b);
@@ -276,6 +278,7 @@ class EmotionController {
   void renderPartialFace(LovyanGFX& display, const FaceState& s);
   void drawEye(LovyanGFX& d, int ex, int eyCenter, bool leftSide, const FaceState& s);
   void drawMouth(LovyanGFX& d, int cx, int mouthY, const FaceState& s);
+  void updateDateTimeStrip(LovyanGFX& d);
 
   void renderNeutral();
   void renderListening();
