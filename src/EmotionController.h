@@ -85,6 +85,12 @@ class EmotionController {
   }
   bool isTurnStateIdle() const { return turnStateIdle_; }
 
+  void setBehaviorState(uint8_t energy, uint8_t curiosity, uint8_t affection) {
+    energy_ = energy;
+    curiosity_ = curiosity;
+    affection_ = affection;
+  }
+
   void showQuickStatus(uint32_t durationMs = 4000) {
     quickStatusUntilMs_ = millis() + durationMs;
     forceFullRedraw_ = true;
@@ -209,6 +215,8 @@ class EmotionController {
     bool isSleep = false;
     uint8_t talkShape = 0;
     int talkYOffset = 0;
+    uint8_t eyelidClip = 18;
+    int mouthCurve = 0;
   };
 
   // Dedicated partial update sprites allocated once in internal SRAM
@@ -232,6 +240,12 @@ class EmotionController {
   int lastTalkShape_ = -1;
   int lastTalkYOffset_ = -1;
   int lastRenderedMinute_ = -1;
+  int lastEyelidClip_ = 18;
+  int lastMouthCurve_ = 0;
+
+  uint8_t energy_ = 60;
+  uint8_t curiosity_ = 55;
+  uint8_t affection_ = 50;
 
   static Mode parseMode(const String& emotion, String& normalized);
   static void hsvToRgb(uint8_t h, uint8_t s, uint8_t v, uint8_t& r, uint8_t& g, uint8_t& b);

@@ -7,7 +7,7 @@ namespace {
 // Keep expressive/emotional motions moderate, and expose separate wide look presets.
 // User-calibrated neutral pitch: commanding Y=0 sits a little too low on this robot,
 // so everyday gestures return to a slightly raised neutral instead of bottoming out.
-constexpr int kNeutralY = 120;
+constexpr int kNeutralY = 250;
 // Visual search keeps the camera slightly raised so a horizontal sector scan
 // sees more of the room without changing the normal conversational neutral.
 constexpr int kSearchY = 180;
@@ -137,8 +137,23 @@ ServoGestureController::Step kSpeakingMicro[] = {
 };
 
 ServoGestureController::Step kIdleBreath[] = {
-    {0, 25, 220, 1400, true},
-    {0, -25, 200, 1400, true},
+    {0, 20, 200, 1200, true},
+    {0, -10, 180, 1200, true},
+    {0, 0, 180, 800, true},
+};
+
+// Idle breath calm: amplitude mais suave (+12 / -6 / 0), velocidade reduzida, pausa orgânica
+ServoGestureController::Step kIdleBreathCalm[] = {
+    {0, 12, 140, 1500, true},
+    {0, -6, 120, 1500, true},
+    {0, 0, 120, 1000, true},
+};
+
+// Idle breath curious: respiracao suave com leve variacao de yaw e retorno estrito ao neutro
+ServoGestureController::Step kIdleBreathCurious[] = {
+    {30, 18, 180, 1300, true},
+    {15, -8, 160, 1300, true},
+    {0, 0, 160, 900, true},
 };
 }  // namespace
 
@@ -171,6 +186,7 @@ void ServoGestureController::loop() {
 
 bool ServoGestureController::queueGesture(const String& name, const String& hold) {
   if (name == "center_head" || name == "center" || name == "home") {
+    Serial.printf("[DIAG:PITCH] CENTER_HEAD requestedY=%d anchorY=%d\n", kNeutralY, anchorY_);
     start("center_head", kCenter, sizeof(kCenter) / sizeof(kCenter[0]), true);
     return true;
   }
@@ -262,6 +278,14 @@ bool ServoGestureController::queueGesture(const String& name, const String& hold
     start("idle_breath", kIdleBreath, sizeof(kIdleBreath) / sizeof(kIdleBreath[0]));
     return true;
   }
+  if (name == "idle_breath_calm") {
+    start("idle_breath_calm", kIdleBreathCalm, sizeof(kIdleBreathCalm) / sizeof(kIdleBreathCalm[0]));
+    return true;
+  }
+  if (name == "idle_breath_curious") {
+    start("idle_breath_curious", kIdleBreathCurious, sizeof(kIdleBreathCurious) / sizeof(kIdleBreathCurious[0]));
+    return true;
+  }
   if (name == "stop_motion" || name == "stop") {
     stop();
     return true;
@@ -316,6 +340,9 @@ void ServoGestureController::issueStep(const Step& step) {
   int speed = clampInt(step.speed, kMinSpeed, kMaxSpeed);
   Serial.printf("ServoGesture: step x=%d y=%d speed=%d hold=%u relative=%s\n",
                 x, y, speed, static_cast<unsigned>(step.holdMs), step.relative ? "yes" : "no");
+  Serial.printf("[DIAG:PITCH] ISSUE_STEP anchorY=%d stepY=%d rawY=%d finalY=%d speed=%d relative=%s\n",
+                anchorY_, step.y, rawY, y, speed, step.relative ? "yes" : "no");
+  Serial.printf("[DIAG:PITCH] BSP PITCH COMMAND y=%d speed=%d\n", y, speed);
   M5StackChan.Motion.move(x, y, speed);
 }
 

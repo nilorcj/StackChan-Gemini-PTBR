@@ -205,11 +205,13 @@ void EmotionController::updateBlinkState(uint32_t now) {
   switch (blinkState_) {
     case BlinkState::OPEN: {
       isBlinking_ = false;
+      uint32_t minBlink = (energy_ > 70) ? 2000 : ((energy_ < 35) ? 3500 : 2500);
+      uint32_t maxBlink = (energy_ > 70) ? 4500 : ((energy_ < 35) ? 7500 : 6000);
       if (nextBlinkDeadlineMs_ == 0) {
-        nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(2500, 6001));
+        nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(minBlink, maxBlink + 1));
       } else if (static_cast<int32_t>(now - nextBlinkDeadlineMs_) >= 0) {
         blinkState_ = BlinkState::FIRST_CLOSED;
-        blinkStageDeadlineMs_ = now + 130;
+        blinkStageDeadlineMs_ = now + (energy_ < 35 ? 160 : 130);
         isBlinking_ = true;
       }
       break;
@@ -217,15 +219,17 @@ void EmotionController::updateBlinkState(uint32_t now) {
     case BlinkState::FIRST_CLOSED: {
       isBlinking_ = true;
       if (static_cast<int32_t>(now - blinkStageDeadlineMs_) >= 0) {
-        // ~15% chance of double blink
-        if (random(100) < 15) {
+        int doubleBlinkChance = (energy_ > 70) ? 25 : ((energy_ < 35) ? 8 : 15);
+        if (random(100) < doubleBlinkChance) {
           blinkState_ = BlinkState::DOUBLE_WAIT;
           uint32_t pause = static_cast<uint32_t>(random(120, 221));
           blinkStageDeadlineMs_ = now + pause;
           isBlinking_ = false;
         } else {
           blinkState_ = BlinkState::OPEN;
-          nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(2500, 6001));
+          uint32_t minBlink = (energy_ > 70) ? 2000 : ((energy_ < 35) ? 3500 : 2500);
+          uint32_t maxBlink = (energy_ > 70) ? 4500 : ((energy_ < 35) ? 7500 : 6000);
+          nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(minBlink, maxBlink + 1));
           isBlinking_ = false;
         }
       }
@@ -244,7 +248,9 @@ void EmotionController::updateBlinkState(uint32_t now) {
       isBlinking_ = true;
       if (static_cast<int32_t>(now - blinkStageDeadlineMs_) >= 0) {
         blinkState_ = BlinkState::OPEN;
-        nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(2500, 6001));
+        uint32_t minBlink = (energy_ > 70) ? 2000 : ((energy_ < 35) ? 3500 : 2500);
+        uint32_t maxBlink = (energy_ > 70) ? 4500 : ((energy_ < 35) ? 7500 : 6000);
+        nextBlinkDeadlineMs_ = now + static_cast<uint32_t>(random(minBlink, maxBlink + 1));
         isBlinking_ = false;
       }
       break;
@@ -268,18 +274,37 @@ void EmotionController::updatePupilDrift(uint32_t now) {
     return;
   }
 
+  uint32_t minDriftInterval = 1500;
+  uint32_t maxDriftInterval = 4000;
+  int centerChance = 35;
+  int maxDx = 4;
+  int maxDy = 2;
+
+  if (curiosity_ > 70) {
+    minDriftInterval = 1200;
+    maxDriftInterval = 3000;
+    centerChance = 20;
+    maxDx = 5;
+    maxDy = 3;
+  } else if (curiosity_ < 35) {
+    minDriftInterval = 2500;
+    maxDriftInterval = 5500;
+    centerChance = 55;
+    maxDx = 3;
+    maxDy = 1;
+  }
+
   if (nextPupilDriftMs_ == 0) {
-    nextPupilDriftMs_ = now + static_cast<uint32_t>(random(1500, 4001));
+    nextPupilDriftMs_ = now + static_cast<uint32_t>(random(minDriftInterval, maxDriftInterval + 1));
   } else if (static_cast<int32_t>(now - nextPupilDriftMs_) >= 0) {
-    // 35% chance to center (0,0), 65% chance to drift subtler (-4..+4, -2..+2)
-    if (random(100) < 35) {
+    if (random(100) < centerChance) {
       targetPupilDx_ = 0;
       targetPupilDy_ = 0;
     } else {
-      targetPupilDx_ = static_cast<int>(random(-4, 5));
-      targetPupilDy_ = static_cast<int>(random(-2, 3));
+      targetPupilDx_ = static_cast<int>(random(-maxDx, maxDx + 1));
+      targetPupilDy_ = static_cast<int>(random(-maxDy, maxDy + 1));
     }
-    nextPupilDriftMs_ = now + static_cast<uint32_t>(random(1500, 4001));
+    nextPupilDriftMs_ = now + static_cast<uint32_t>(random(minDriftInterval, maxDriftInterval + 1));
   }
 
   float diffX = static_cast<float>(targetPupilDx_) - currentPupilDx_;
@@ -555,10 +580,34 @@ EmotionController::FaceState EmotionController::computeFaceState() const {
       // Integer rounding ensures eyesDirty only triggers when drawn integer pixel actually changes
       s.pupilDx = static_cast<int>(roundf(currentPupilDx_));
       s.pupilDy = static_cast<int>(roundf(currentPupilDy_));
+
+      // Etapa 5: Abertura/relaxamento dos olhos modulada sutilmente pela energia
+      if (energy_ >= 75) {
+        s.eyelidClip = 15; // Olhos discretamente mais abertos (mais atenta/viva)
+      } else if (energy_ >= 60) {
+        s.eyelidClip = 17;
+      } else if (energy_ >= 45) {
+        s.eyelidClip = 18; // Padrão
+      } else if (energy_ >= 30) {
+        s.eyelidClip = 19;
+      } else {
+        s.eyelidClip = 21; // Olhos ligeiramente mais relaxados (calma/tranquila)
+      }
+
+      // Etapa 5: Curvatura dos lábios modulada por afeto (expressão-base acolhedora sem virar sorriso fixo)
+      if (affection_ >= 68) {
+        s.mouthCurve = 2; // Leve curvatura serena/acolhedora de 2px
+      } else if (affection_ >= 58) {
+        s.mouthCurve = 1; // Curvatura sutil de 1px
+      } else {
+        s.mouthCurve = 0; // Neutro plano padrão
+      }
     } else {
       s.closed = false;
       s.pupilDx = 0;
       s.pupilDy = 0;
+      s.eyelidClip = 18;
+      s.mouthCurve = 0;
     }
   }
 
@@ -656,17 +705,19 @@ void EmotionController::drawEye(LovyanGFX& d, int ex, int eyCenter, bool leftSid
     // Wide open startled eyes: no top eyelid clipping!
     d.drawCircle(ex, eyCenter, eyeR + 2, 0xFA48);
   } else {
-    d.fillRect(ex - eyeR - 2, eyCenter - eyeR - 2, (eyeR * 2) + 4, 18, TFT_BLACK);
-    d.drawLine(ex - eyeR, eyCenter - eyeR + 16, ex + eyeR, eyCenter - eyeR + 16, s.glowAccent);
+    int clip = s.eyelidClip;
+    d.fillRect(ex - eyeR - 2, eyCenter - eyeR - 2, (eyeR * 2) + 4, clip, TFT_BLACK);
+    d.drawLine(ex - eyeR, eyCenter - eyeR + clip - 2, ex + eyeR, eyCenter - eyeR + clip - 2, s.glowAccent);
   }
 
   // Top Eyelash Accent
+  int lashY = eyCenter - eyeR + s.eyelidClip - 8;
   if (leftSide) {
-    d.drawLine(ex - eyeR, eyCenter - eyeR + 10, ex - eyeR - 6, eyCenter - eyeR + 3, s.glowAccent);
-    d.drawLine(ex - eyeR + 2, eyCenter - eyeR + 8, ex - eyeR - 4, eyCenter - eyeR + 1, s.glowAccent);
+    d.drawLine(ex - eyeR, lashY, ex - eyeR - 6, lashY - 7, s.glowAccent);
+    d.drawLine(ex - eyeR + 2, lashY - 2, ex - eyeR - 4, lashY - 9, s.glowAccent);
   } else {
-    d.drawLine(ex + eyeR, eyCenter - eyeR + 10, ex + eyeR + 6, eyCenter - eyeR + 3, s.glowAccent);
-    d.drawLine(ex + eyeR - 2, eyCenter - eyeR + 8, ex + eyeR + 4, eyCenter - eyeR + 1, s.glowAccent);
+    d.drawLine(ex + eyeR, lashY, ex + eyeR + 6, lashY - 7, s.glowAccent);
+    d.drawLine(ex + eyeR - 2, lashY - 2, ex + eyeR + 4, lashY - 9, s.glowAccent);
   }
 }
 
@@ -711,9 +762,20 @@ void EmotionController::drawMouth(LovyanGFX& d, int cx, int mouthY, const FaceSt
   } else if (s.isSleep) {
     // Sleep text only drawn on full-screen canvas
   } else {
-    // Neutral calm lips
-    d.fillRoundRect(cx - 24, mouthY, 48, 5, 2, s.glowAccent);
-    d.fillRoundRect(cx - 22, mouthY + 1, 44, 3, 1, TFT_WHITE);
+    // Neutral calm lips (modulada sutilmente pelo afeto)
+    if (s.mouthCurve > 0) {
+      const int mw = 22;
+      for (int t = -mw; t <= mw; ++t) {
+        float norm = static_cast<float>(t) / static_cast<float>(mw);
+        int dy = static_cast<int>(static_cast<float>(s.mouthCurve) * (1.0f - norm * norm));
+        d.drawPixel(cx + t, mouthY + dy, s.glowAccent);
+        d.drawPixel(cx + t, mouthY + dy + 1, TFT_WHITE);
+        d.drawPixel(cx + t, mouthY + dy + 2, s.glowAccent);
+      }
+    } else {
+      d.fillRoundRect(cx - 24, mouthY, 48, 5, 2, s.glowAccent);
+      d.fillRoundRect(cx - 22, mouthY + 1, 44, 3, 1, TFT_WHITE);
+    }
   }
 }
 
@@ -915,11 +977,15 @@ void EmotionController::renderPartialFace(LovyanGFX& display, const FaceState& s
   uint32_t rightEyePushMs = 0;
   uint32_t mouthPushMs = 0;
 
-  bool eyesDirty = (s.pupilDx != lastPupilDx_ || s.pupilDy != lastPupilDy_ || s.closed != lastClosed_);
+  bool eyesDirty = (s.pupilDx != lastPupilDx_ || s.pupilDy != lastPupilDy_ || s.closed != lastClosed_ || s.eyelidClip != lastEyelidClip_);
   bool mouthDirty = false;
 
   if (s.isSpeaking) {
     if (s.talkShape != lastTalkShape_ || s.talkYOffset != lastTalkYOffset_) {
+      mouthDirty = true;
+    }
+  } else {
+    if (s.mouthCurve != lastMouthCurve_) {
       mouthDirty = true;
     }
   }
@@ -940,6 +1006,7 @@ void EmotionController::renderPartialFace(LovyanGFX& display, const FaceState& s
     lastPupilDx_ = s.pupilDx;
     lastPupilDy_ = s.pupilDy;
     lastClosed_ = s.closed;
+    lastEyelidClip_ = s.eyelidClip;
   }
 
   if (mouthDirty) {
@@ -951,6 +1018,7 @@ void EmotionController::renderPartialFace(LovyanGFX& display, const FaceState& s
 
     lastTalkShape_ = s.talkShape;
     lastTalkYOffset_ = s.talkYOffset;
+    lastMouthCurve_ = s.mouthCurve;
   }
 
   uint32_t partialTotalMs = millis() - tPartialStart;
@@ -1009,6 +1077,8 @@ void EmotionController::renderFace() {
     lastClosed_ = s.closed;
     lastTalkShape_ = s.talkShape;
     lastTalkYOffset_ = s.talkYOffset;
+    lastEyelidClip_ = s.eyelidClip;
+    lastMouthCurve_ = s.mouthCurve;
     return;
   }
 

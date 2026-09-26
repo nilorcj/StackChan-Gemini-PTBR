@@ -30,7 +30,7 @@ class ServoGestureController {
  private:
 
   static constexpr int kNeutralX = 0;
-  static constexpr int kNeutralY = 120;
+  static constexpr int kNeutralY = 250;
   static constexpr int kMinX = -1280;
   static constexpr int kMaxX = 1280;
   static constexpr int kMinY = 50;

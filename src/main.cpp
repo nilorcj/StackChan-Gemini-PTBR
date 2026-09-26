@@ -5,6 +5,7 @@ SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <Preferences.h>
 #include <esp_sntp.h>
 #include "GeminiLiveProbe.h"
 #include "MemoryStore.h"
@@ -698,7 +699,17 @@ void setup() {
   emotion.setLiveFeeds(&liveFeeds);
   servoGestures.begin();
   camera.begin();
-  M5StackChan.Motion.goHome();
+  servoGestures.queueGesture("center_head");
+  {
+    Preferences servoPrefs;
+    servoPrefs.begin("servo", true);
+    int nvsZero1 = servoPrefs.getInt("zero_pos_1", -1);
+    int nvsZero2 = servoPrefs.getInt("zero_pos_2", -1);
+    servoPrefs.end();
+    auto bspAng = M5StackChan.Motion.getCurrentAngles();
+    Serial.printf("[DIAG:PITCH_BOOT] NVS zero_pos_1(yaw)=%d zero_pos_2(pitch)=%d BSP angX=%d angY=%d\n",
+                  nvsZero1, nvsZero2, bspAng.x, bspAng.y);
+  }
   if (unitPaHub.begin()) {
     for (uint8_t channel = 0; channel < 8; ++channel) {
       unitPaHub.scanChannel(channel);
@@ -865,6 +876,29 @@ void loop() {
       } else {
         Serial.printf("[CONFIG:MIC_GAIN] ERROR: invalid gain %d (valid: 1..24)\n", newGain);
       }
+    } else if (cmdLine.startsWith("TIME_SIM=")) {
+      int simHour = cmdLine.substring(9).toInt();
+      g_behaviorManager.setSimulatedHour(static_cast<int8_t>(simHour));
+      Serial.printf("[CONFIG:TIME_SIM] simulated_hour=%d effEnergy=%u effCuriosity=%u tBias=%+d\n",
+                    simHour, g_behaviorManager.effectiveEnergy(), g_behaviorManager.effectiveCuriosity(),
+                    g_behaviorManager.temporalEnergyBias());
+    } else if (cmdLine.startsWith("PITCH_TEST=")) {
+      int pVal = cmdLine.substring(11).toInt();
+      servoGestures.stop();
+      Serial.printf("[TEST:PITCH_MANUAL] requested raw pitch=%d\n", pVal);
+      M5StackChan.Motion.move(0, pVal, 500);
+      delay(400);
+      auto ang = M5StackChan.Motion.getCurrentAngles();
+      float ax = 0, ay = 0, az = 0;
+      M5.Imu.getAccel(&ax, &ay, &az);
+      Serial.printf("[TEST:PITCH_MANUAL] BSP feedback: currentYaw=%d currentPitch=%d IMU ax=%.2f ay=%.2f az=%.2f\n",
+                    ang.x, ang.y, ax, ay, az);
+    } else if (cmdLine.startsWith("GESTURE=")) {
+      String gName = cmdLine.substring(8);
+      bool ok = servoGestures.queueGesture(gName);
+      Serial.printf("[TEST:GESTURE] queued gesture=%s ok=%s active=%s anchorX=%d anchorY=%d\n",
+                    gName.c_str(), ok ? "yes" : "no", servoGestures.active() ? "yes" : "no",
+                    servoGestures.anchorX(), servoGestures.anchorY());
     }
   }
 
@@ -938,6 +972,9 @@ void loop() {
   emotion.setPhysicalMute(g_physical_mute);
   emotion.setConversationArmed(gemini.isConversationArmed());
   emotion.setTurnStateIdle(gemini.turnState() == GeminiLiveProbe::LiveTurnState::IDLE);
+  emotion.setBehaviorState(g_behaviorManager.effectiveEnergy(),
+                           g_behaviorManager.effectiveCuriosity(),
+                           g_behaviorManager.effectiveAffection());
   emotion.loop();
 
   // Update LiveFeedsManager system idle state for Core 0 background worker
@@ -1040,7 +1077,13 @@ void loop() {
         playCatPurrDocileSound();
         break;
       case BehaviorDecision::IDLE_BREATH:
-        servoGestures.queueGesture("idle_breath");
+        if (g_behaviorManager.effectiveEnergy() < 40) {
+          servoGestures.queueGesture("idle_breath_calm");
+        } else if (g_behaviorManager.effectiveCuriosity() >= 65) {
+          servoGestures.queueGesture("idle_breath_curious");
+        } else {
+          servoGestures.queueGesture("idle_breath");
+        }
         break;
       case BehaviorDecision::NO_ACTION:
       default:
@@ -1434,6 +1477,7 @@ void loop() {
               delay(10);
               chirpWait += 10;
             }
+            if (servoGestures.active()) servoGestures.stop();
             gemini.armConversation("TOUCH");
           } else {
             Serial.println("LTR-553: Morning wakeup conversation skipped (MUDO FISICO / DND active)");
@@ -1530,7 +1574,7 @@ void loop() {
           g_emotion_override_until_ms = now + 3000;
           playWakeDroidChirp();
           unitPaHub.buzzAlert();
-          servoGestures.queueGesture("nod");
+          if (servoGestures.active()) servoGestures.stop();
           gemini.armConversation("TOUCH");
         } else {
           Serial.println("Touch: front/back touch blocked by DND");
@@ -1678,6 +1722,7 @@ void loop() {
           delay(10);
           chirpWait += 10;
         }
+        if (servoGestures.active()) servoGestures.stop();
         bool queued = gemini.armConversation("TOUCH");
         if (queued) {
           emotion.setEmotion("thinking");
