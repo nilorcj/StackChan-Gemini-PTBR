@@ -5,7 +5,9 @@
 enum class BehaviorEvent : uint8_t {
   PRESENCE,
   TOUCH,
-  IDLE_TICK
+  IDLE_TICK,
+  WAVE,
+  CONVERSATION_TURN_END
 };
 
 enum class BehaviorDecision : uint8_t {
@@ -40,11 +42,13 @@ class PixBehaviorManager {
   uint8_t curiosity_ = 55;
   uint8_t affection_ = 50;
 
+  uint32_t lastInteractionMs_ = 0;
+
   uint32_t lastPresenceReactionMs_ = 0;
   uint32_t presenceCooldownMs_ = 12000;
 
   uint32_t lastTouchReactionMs_ = 0;
-  uint32_t touchCooldownMs_ = 3000;
+  uint32_t touchCooldownMs_ = 2500;
 
   uint32_t lastIdleTickMs_ = 0;
   uint32_t nextIdleIntervalMs_ = 10000;
@@ -56,6 +60,9 @@ class PixBehaviorManager {
   BehaviorDecision decidePresence(uint32_t nowMs);
   BehaviorDecision decideTouch(uint32_t nowMs);
   BehaviorDecision decideIdle(uint32_t nowMs);
+  BehaviorDecision decideWave(uint32_t nowMs);
+  BehaviorDecision decideConversationEnd(uint32_t nowMs);
 
   void logDecision(const char* eventStr, BehaviorDecision decision);
+  void logState(const char* eventTag);
 };

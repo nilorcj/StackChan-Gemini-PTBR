@@ -917,6 +917,21 @@ void loop() {
 
   gemini.loop();
   bool realAudioSpeaking = gemini.isSpeaking();
+  static bool s_last_audio_speaking = false;
+  static uint32_t s_last_accounted_user_turn_id = 0;
+
+  if (s_last_audio_speaking && !realAudioSpeaking) {
+    uint32_t curTurnId = gemini.currentUserTurnId();
+    if (gemini.isConversationArmed() &&
+        !g_is_currently_lifted &&
+        gemini.turnState() != GeminiLiveProbe::LiveTurnState::TOOL_CALL &&
+        curTurnId > s_last_accounted_user_turn_id) {
+      s_last_accounted_user_turn_id = curTurnId;
+      g_behaviorManager.onEvent(BehaviorEvent::CONVERSATION_TURN_END, now);
+    }
+  }
+  s_last_audio_speaking = realAudioSpeaking;
+
   emotion.setIsSpeaking(realAudioSpeaking);
   emotion.setMicActive(gemini.isRecording() && !realAudioSpeaking);
   emotion.setDoNotDisturb(gemini.isDoNotDisturb());
@@ -1313,6 +1328,7 @@ void loop() {
         g_emotion_override_until_ms = now + 2000;
         unitPaHub.click();
         servoGestures.queueGesture("nod_yes");
+        g_behaviorManager.onEvent(BehaviorEvent::WAVE, now);
       }
       // Prioridade 5: Gesto válido para abrir conversa!
       else {
@@ -1324,6 +1340,7 @@ void loop() {
         unitPaHub.click();
         servoGestures.queueGesture("nod_yes");
         s_pending_wave_arm = true;
+        g_behaviorManager.onEvent(BehaviorEvent::WAVE, now);
       }
     }
     else if (tofEvt == TofEvent::USER_PRESENT) {
