@@ -91,6 +91,11 @@ class EmotionController {
     affection_ = affection;
   }
 
+  void setSocialAttention(bool active) {
+    socialAttention_ = active;
+  }
+  bool isSocialAttention() const { return socialAttention_; }
+
   void showQuickStatus(uint32_t durationMs = 4000) {
     quickStatusUntilMs_ = millis() + durationMs;
     forceFullRedraw_ = true;
@@ -246,6 +251,7 @@ class EmotionController {
   uint8_t energy_ = 60;
   uint8_t curiosity_ = 55;
   uint8_t affection_ = 50;
+  bool socialAttention_ = false;
 
   static Mode parseMode(const String& emotion, String& normalized);
   static void hsvToRgb(uint8_t h, uint8_t s, uint8_t v, uint8_t& r, uint8_t& g, uint8_t& b);

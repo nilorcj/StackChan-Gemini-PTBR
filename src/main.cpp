@@ -972,6 +972,7 @@ void loop() {
   emotion.setPhysicalMute(g_physical_mute);
   emotion.setConversationArmed(gemini.isConversationArmed());
   emotion.setTurnStateIdle(gemini.turnState() == GeminiLiveProbe::LiveTurnState::IDLE);
+  emotion.setSocialAttention(g_behaviorManager.isSocialAttentionActive(now));
   emotion.setBehaviorState(g_behaviorManager.effectiveEnergy(),
                            g_behaviorManager.effectiveCuriosity(),
                            g_behaviorManager.effectiveAffection());
@@ -1084,6 +1085,9 @@ void loop() {
         } else {
           servoGestures.queueGesture("idle_breath");
         }
+        break;
+      case BehaviorDecision::SOCIAL_MICRO_ADJUST:
+        servoGestures.queueGesture("social_micro_adjust");
         break;
       case BehaviorDecision::NO_ACTION:
       default:
@@ -1409,7 +1413,9 @@ void loop() {
   }
 
   // Presença contínua à mesa: mantém o robô acordado enquanto o usuário estiver trabalhando
-  if (g_tofDetector.isUserPresent()) {
+  bool isUserPres = g_tofDetector.isUserPresent();
+  g_behaviorManager.setUserPresent(isUserPres);
+  if (isUserPres) {
     g_last_human_activity_ms = now;
   }
 

@@ -8,6 +8,7 @@ PixBehaviorManager::PixBehaviorManager()
       temporalEnergyBias_(0), temporalCuriosityBias_(0), lastTemporalUpdateMs_(0),
       afterglowEnergy_(0.0f), afterglowCuriosity_(0.0f), afterglowAffection_(0.0f), lastAfterglowUpdateMs_(0),
       lastInteractionMs_(0),
+      userPresent_(false), lastSocialReorientMs_(0), socialReorientCooldownMs_(45000),
       lastPresenceReactionMs_(0), presenceCooldownMs_(12000),
       lastTouchReactionMs_(0), touchCooldownMs_(2500),
       lastIdleTickMs_(0), nextIdleIntervalMs_(10000),
@@ -16,13 +17,14 @@ PixBehaviorManager::PixBehaviorManager()
 
 const char* PixBehaviorManager::decisionToString(BehaviorDecision d) {
   switch (d) {
-    case BehaviorDecision::NO_ACTION:     return "NO_ACTION";
-    case BehaviorDecision::LOOK_AT_USER:  return "LOOK_AT_USER";
-    case BehaviorDecision::HAPPY_SHORT:   return "HAPPY_SHORT";
-    case BehaviorDecision::CURIOUS_TILT:  return "CURIOUS_TILT";
-    case BehaviorDecision::MEIGO_SHORT:   return "MEIGO_SHORT";
-    case BehaviorDecision::IDLE_BREATH:   return "IDLE_BREATH";
-    default:                              return "UNKNOWN";
+    case BehaviorDecision::NO_ACTION:           return "NO_ACTION";
+    case BehaviorDecision::LOOK_AT_USER:        return "LOOK_AT_USER";
+    case BehaviorDecision::HAPPY_SHORT:         return "HAPPY_SHORT";
+    case BehaviorDecision::CURIOUS_TILT:        return "CURIOUS_TILT";
+    case BehaviorDecision::MEIGO_SHORT:         return "MEIGO_SHORT";
+    case BehaviorDecision::IDLE_BREATH:         return "IDLE_BREATH";
+    case BehaviorDecision::SOCIAL_MICRO_ADJUST: return "SOCIAL_MICRO_ADJUST";
+    default:                                    return "UNKNOWN";
   }
 }
 
@@ -255,6 +257,19 @@ BehaviorDecision PixBehaviorManager::decideIdle(uint32_t nowMs) {
     }
   }
 
+  // Etapa 8: Micro-reorientação sutil em atenção social (presença estável ou atenção recente)
+  // Rara, discreta (±2° a ±4°), com cooldown longo (40-70s) e nunca competindo com ações espontâneas
+  if (isSocialAttentionActive(nowMs) && (nowMs - lastSocialReorientMs_ >= socialReorientCooldownMs_)) {
+    // 25% de chance de micro-ajuste durante um tick ocioso quando o cooldown expirou
+    if ((esp_random() % 100) < 25) {
+      lastSocialReorientMs_ = nowMs;
+      socialReorientCooldownMs_ = 40000 + (esp_random() % 30001); // 40-70s cooldown
+      logState("SOCIAL_ATTENTION");
+      logDecision("SOCIAL_ATTENTION", BehaviorDecision::SOCIAL_MICRO_ADJUST);
+      return BehaviorDecision::SOCIAL_MICRO_ADJUST;
+    }
+  }
+
   // Comportamento normal de repouso: alternância entre respiração suave e repouso silencioso
   uint32_t roll = esp_random() % 100;
   if (roll < 45) {
@@ -262,6 +277,14 @@ BehaviorDecision PixBehaviorManager::decideIdle(uint32_t nowMs) {
   }
 
   return BehaviorDecision::NO_ACTION; // 55% silêncio/repouso calmo
+}
+
+bool PixBehaviorManager::isSocialAttentionActive(uint32_t nowMs) const {
+  if (userPresent_) return true;
+  if (lastInteractionMs_ > 0 && (nowMs - lastInteractionMs_ < 90000)) return true;
+  if (lastPresenceReactionMs_ > 0 && (nowMs - lastPresenceReactionMs_ < 60000)) return true;
+  if (afterglowCuriosity_ >= 1.0f || afterglowAffection_ >= 1.0f) return true;
+  return false;
 }
 
 void PixBehaviorManager::computeTemporalBiases() {

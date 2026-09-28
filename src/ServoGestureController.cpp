@@ -155,6 +155,23 @@ ServoGestureController::Step kIdleBreathCurious[] = {
     {15, -8, 160, 1300, true},
     {0, 0, 160, 900, true},
 };
+
+// Etapa 8: Micro-reorientações sutis de atenção social em presença estável (±2° a ±4° = ±20..±40 unidades)
+// Retorno estrito à âncora neutra {0, 0} com velocidades lentas e orgânicas
+ServoGestureController::Step kSocialMicroAdjustRight[] = {
+    {25, 8, 160, 1800, true},
+    {0, 0, 140, 900, true},
+};
+
+ServoGestureController::Step kSocialMicroAdjustLeft[] = {
+    {-25, 8, 160, 1800, true},
+    {0, 0, 140, 900, true},
+};
+
+ServoGestureController::Step kSocialMicroAdjustCenter[] = {
+    {0, 18, 150, 1600, true},
+    {0, 0, 130, 800, true},
+};
 }  // namespace
 
 void ServoGestureController::begin() {
@@ -284,6 +301,29 @@ bool ServoGestureController::queueGesture(const String& name, const String& hold
   }
   if (name == "idle_breath_curious") {
     start("idle_breath_curious", kIdleBreathCurious, sizeof(kIdleBreathCurious) / sizeof(kIdleBreathCurious[0]));
+    return true;
+  }
+  if (name == "social_micro_adjust") {
+    uint32_t r = esp_random() % 3;
+    if (r == 0) {
+      start("social_micro_adjust", kSocialMicroAdjustRight, sizeof(kSocialMicroAdjustRight) / sizeof(kSocialMicroAdjustRight[0]));
+    } else if (r == 1) {
+      start("social_micro_adjust", kSocialMicroAdjustLeft, sizeof(kSocialMicroAdjustLeft) / sizeof(kSocialMicroAdjustLeft[0]));
+    } else {
+      start("social_micro_adjust", kSocialMicroAdjustCenter, sizeof(kSocialMicroAdjustCenter) / sizeof(kSocialMicroAdjustCenter[0]));
+    }
+    return true;
+  }
+  if (name == "social_micro_right") {
+    start("social_micro_right", kSocialMicroAdjustRight, sizeof(kSocialMicroAdjustRight) / sizeof(kSocialMicroAdjustRight[0]));
+    return true;
+  }
+  if (name == "social_micro_left") {
+    start("social_micro_left", kSocialMicroAdjustLeft, sizeof(kSocialMicroAdjustLeft) / sizeof(kSocialMicroAdjustLeft[0]));
+    return true;
+  }
+  if (name == "social_micro_center") {
+    start("social_micro_center", kSocialMicroAdjustCenter, sizeof(kSocialMicroAdjustCenter) / sizeof(kSocialMicroAdjustCenter[0]));
     return true;
   }
   if (name == "stop_motion" || name == "stop") {

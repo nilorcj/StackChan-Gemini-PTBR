@@ -17,7 +17,8 @@ enum class BehaviorDecision : uint8_t {
   HAPPY_SHORT,
   CURIOUS_TILT,
   MEIGO_SHORT,
-  IDLE_BREATH
+  IDLE_BREATH,
+  SOCIAL_MICRO_ADJUST
 };
 
 class PixBehaviorManager {
@@ -71,6 +72,11 @@ class PixBehaviorManager {
   }
   int8_t simulatedHour() const { return simulatedHour_; }
 
+  // Etapa 8: Atenção social em presença estável ou recente
+  void setUserPresent(bool present) { userPresent_ = present; }
+  bool isUserPresent() const { return userPresent_; }
+  bool isSocialAttentionActive(uint32_t nowMs) const;
+
   static const char* decisionToString(BehaviorDecision d);
   static const char* eventToString(BehaviorEvent e);
 
@@ -91,6 +97,10 @@ class PixBehaviorManager {
   uint32_t lastAfterglowUpdateMs_ = 0;
 
   uint32_t lastInteractionMs_ = 0;
+
+  bool userPresent_ = false;
+  uint32_t lastSocialReorientMs_ = 0;
+  uint32_t socialReorientCooldownMs_ = 45000;
 
   uint32_t lastPresenceReactionMs_ = 0;
   uint32_t presenceCooldownMs_ = 12000;

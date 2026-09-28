@@ -280,7 +280,26 @@ void EmotionController::updatePupilDrift(uint32_t now) {
   int maxDx = 4;
   int maxDy = 2;
 
-  if (curiosity_ > 70) {
+  if (socialAttention_) {
+    // Etapa 8: Atenção social em presença estável ou recente
+    // Favorece posições próximas do centro / voltadas ao usuário,
+    // mantendo microderiva orgânica com transições suaves e sem fixação rígida.
+    if (curiosity_ > 70) {
+      // Alta curiosidade produz mais vivacidade no olhar (50% centro, micro-olhares ±3px, ritmo 1.4..3.2s)
+      centerChance = 50;
+      maxDx = 3;
+      maxDy = 2;
+      minDriftInterval = 1400;
+      maxDriftInterval = 3200;
+    } else {
+      // Curiosidade moderada/baixa: olhar preferencialmente no usuário (~65%) com microdesvios sutis (±2px)
+      centerChance = 65;
+      maxDx = 2;
+      maxDy = 1;
+      minDriftInterval = 2000;
+      maxDriftInterval = 4500;
+    }
+  } else if (curiosity_ > 70) {
     minDriftInterval = 1200;
     maxDriftInterval = 3000;
     centerChance = 20;
