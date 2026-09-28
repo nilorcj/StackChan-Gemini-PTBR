@@ -1228,6 +1228,7 @@ void loop() {
               tableStableSinceMs = 0;
               g_is_currently_lifted = false;
               emotion.setLifted(false);
+              g_behaviorManager.onEvent(BehaviorEvent::LIFT_RETURN, now);
               emotion.setEmotion("happy"); // Alivio ao retornar a seguranca da mesa
               g_emotion_override_until_ms = now + 3500;
               unitPaHub.vibrateRelief();

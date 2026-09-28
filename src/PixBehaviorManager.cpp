@@ -8,6 +8,8 @@ PixBehaviorManager::PixBehaviorManager()
       temporalEnergyBias_(0), temporalCuriosityBias_(0), lastTemporalUpdateMs_(0),
       afterglowEnergy_(0.0f), afterglowCuriosity_(0.0f), afterglowAffection_(0.0f), lastAfterglowUpdateMs_(0),
       lastInteractionMs_(0),
+      lastConversationEndMs_(0), lastTouchMs_(0), lastWaveMs_(0), lastLiftReturnMs_(0),
+      lastAction_(BehaviorDecision::NO_ACTION),
       userPresent_(false), lastSocialReorientMs_(0), socialReorientCooldownMs_(45000),
       lastPresenceReactionMs_(0), presenceCooldownMs_(12000),
       lastTouchReactionMs_(0), touchCooldownMs_(2500),
@@ -35,6 +37,7 @@ const char* PixBehaviorManager::eventToString(BehaviorEvent e) {
     case BehaviorEvent::IDLE_TICK:             return "IDLE";
     case BehaviorEvent::WAVE:                  return "WAVE";
     case BehaviorEvent::CONVERSATION_TURN_END: return "CONVERSATION";
+    case BehaviorEvent::LIFT_RETURN:           return "LIFT_RETURN";
     default:                                   return "UNKNOWN";
   }
 }
@@ -78,6 +81,10 @@ BehaviorDecision PixBehaviorManager::onEvent(BehaviorEvent event, uint32_t nowMs
       return decideWave(nowMs);
     case BehaviorEvent::CONVERSATION_TURN_END:
       return decideConversationEnd(nowMs);
+    case BehaviorEvent::LIFT_RETURN:
+      lastLiftReturnMs_ = nowMs;
+      logState("LIFT_RETURN");
+      return BehaviorDecision::NO_ACTION;
     default:
       return BehaviorDecision::NO_ACTION;
   }
@@ -149,6 +156,7 @@ BehaviorDecision PixBehaviorManager::decidePresence(uint32_t nowMs) {
 
   lastPresenceReactionMs_ = nowMs;
   presenceCooldownMs_ = 12000 + (esp_random() % 6001); // 12-18s cooldown após reagir
+  lastAction_ = decision;
 
   logState("PRESENCE");
   logDecision("PRESENCE", decision);
@@ -161,6 +169,7 @@ BehaviorDecision PixBehaviorManager::decideTouch(uint32_t nowMs) {
   }
 
   lastInteractionMs_ = nowMs;
+  lastTouchMs_ = nowMs;
   lastTouchReactionMs_ = nowMs;
   touchCooldownMs_ = 2500;
 
@@ -178,6 +187,7 @@ BehaviorDecision PixBehaviorManager::decideTouch(uint32_t nowMs) {
   afterglowEnergy_ = fminf(3.0f, afterglowEnergy_ + 1.0f);
 
   BehaviorDecision decision = BehaviorDecision::MEIGO_SHORT;
+  lastAction_ = decision;
   logState("PET");
   logDecision("TOUCH", decision);
   return decision;
@@ -185,6 +195,8 @@ BehaviorDecision PixBehaviorManager::decideTouch(uint32_t nowMs) {
 
 BehaviorDecision PixBehaviorManager::decideWave(uint32_t nowMs) {
   lastInteractionMs_ = nowMs;
+  lastWaveMs_ = nowMs;
+  lastAction_ = BehaviorDecision::LOOK_AT_USER; // Aceno orienta atenção ao usuário
   // HAND_WAVE: pode aumentar levemente curiosity (+2, max 100)
   if (curiosity_ <= 98) curiosity_ += 2; else curiosity_ = 100;
   // Custo muito leve de atenção (-1 energy se > 15)
@@ -199,6 +211,7 @@ BehaviorDecision PixBehaviorManager::decideWave(uint32_t nowMs) {
 
 BehaviorDecision PixBehaviorManager::decideConversationEnd(uint32_t nowMs) {
   lastInteractionMs_ = nowMs;
+  lastConversationEndMs_ = nowMs;
   // Turno de conversa concluído:
   // - pequeno aumento de affection (+2, max 100)
   // - curiosidade satisfeita: reduz suavemente curiosity (-2, min 30)
@@ -224,6 +237,11 @@ BehaviorDecision PixBehaviorManager::decideIdle(uint32_t nowMs) {
   lastIdleTickMs_ = nowMs;
   nextIdleIntervalMs_ = 9000 + (esp_random() % 8001); // Intervalo orgânico variável entre 9s e 17s
 
+  // Etapa 9: Janela de estabilização pós-LIFT (10s) para assentamento mecânico na mesa
+  if (lastLiftReturnMs_ > 0 && (nowMs - lastLiftReturnMs_ < 10000)) {
+    return BehaviorDecision::NO_ACTION;
+  }
+
   // Ações espontâneas raras: apenas se cooldown de 18-30s tiver expirado
   bool canSpontaneous = (nowMs - lastSpontaneousActionMs_ >= spontaneousCooldownMs_);
   if (canSpontaneous) {
@@ -231,6 +249,25 @@ BehaviorDecision PixBehaviorManager::decideIdle(uint32_t nowMs) {
     int spontaneousChance = 22 + (static_cast<int>(effectiveEnergy()) - 50) * 15 / 100;
     if (spontaneousChance < 8) spontaneousChance = 8;
     if (spontaneousChance > 28) spontaneousChance = 28;
+
+    // Etapa 9: Coerência contextual pós-conversa (45s): reduz fortemente chance de gesto espontâneo
+    if (lastConversationEndMs_ > 0 && (nowMs - lastConversationEndMs_ < 45000)) {
+      spontaneousChance = spontaneousChance / 4; // reduz para ~2..7%
+    }
+
+    // Etapa 9: Coerência contextual pós-afago (60s): favorece repouso tranquilo
+    bool inPostTouch = (lastTouchMs_ > 0 && (nowMs - lastTouchMs_ < 60000));
+    if (inPostTouch) {
+      spontaneousChance = spontaneousChance * 6 / 10; // redução moderada (~40% a menos)
+    }
+
+    // Quiet floor clamp: garante piso mínimo de 3% para manter vida sutil mesmo com janelas sobrepostas
+    if (spontaneousChance < 3) {
+      spontaneousChance = 3;
+    }
+
+    // Etapa 9: Coerência contextual pós-WAVE (30s): evita repetir gesto redundante de atenção
+    bool inPostWave = (lastWaveMs_ > 0 && (nowMs - lastWaveMs_ < 30000));
 
     uint32_t rollSpontaneous = esp_random() % 100;
     if (rollSpontaneous < static_cast<uint32_t>(spontaneousChance)) {
@@ -241,29 +278,54 @@ BehaviorDecision PixBehaviorManager::decideIdle(uint32_t nowMs) {
       if (energy_ > 10) energy_ -= 1;
 
       BehaviorDecision decision = BehaviorDecision::LOOK_AT_USER;
-      // Alta afeição efetiva dá chance de um sorriso sutil espontâneo
-      if (effectiveAffection() >= 65 && (esp_random() % 100) < 35) {
+      // Alta afeição efetiva dá chance de um sorriso sutil espontâneo (suprimido se em pós-afago recente)
+      if (effectiveAffection() >= 65 && !inPostTouch && (esp_random() % 100) < 35) {
         decision = BehaviorDecision::HAPPY_SHORT;
       } else if (effectiveCuriosity() >= 60) {
-        // Alta curiosidade favorece olhar ou inclinação curiosa
-        decision = (esp_random() % 100 < 65) ? BehaviorDecision::CURIOUS_TILT : BehaviorDecision::LOOK_AT_USER;
+        if (inPostWave) {
+          decision = (esp_random() % 100 < 50) ? BehaviorDecision::HAPPY_SHORT : BehaviorDecision::LOOK_AT_USER;
+        } else {
+          decision = (esp_random() % 100 < 65) ? BehaviorDecision::CURIOUS_TILT : BehaviorDecision::LOOK_AT_USER;
+        }
       } else {
         decision = (esp_random() % 2 == 0) ? BehaviorDecision::LOOK_AT_USER : BehaviorDecision::CURIOUS_TILT;
       }
 
-      logState("IDLE_SPONTANEOUS");
-      logDecision("IDLE_SPONTANEOUS", decision);
-      return decision;
+      // Etapa 9: Supressão de repetição (evita escolher a mesma ação duas vezes seguidas)
+      if (decision == lastAction_) {
+        if (decision == BehaviorDecision::LOOK_AT_USER) {
+          if (!inPostWave && ((esp_random() % 100) < 80)) {
+            decision = BehaviorDecision::CURIOUS_TILT;
+          } else if ((esp_random() % 100) < 60) {
+            decision = BehaviorDecision::NO_ACTION;
+          }
+        } else if (decision == BehaviorDecision::CURIOUS_TILT) {
+          if ((esp_random() % 100) < 80) {
+            decision = BehaviorDecision::LOOK_AT_USER;
+          }
+        } else if (decision == BehaviorDecision::HAPPY_SHORT) {
+          decision = BehaviorDecision::LOOK_AT_USER;
+        }
+      }
+
+      if (decision != BehaviorDecision::NO_ACTION) {
+        lastAction_ = decision;
+        logState("IDLE_SPONTANEOUS");
+        logDecision("IDLE_SPONTANEOUS", decision);
+        return decision;
+      }
     }
   }
 
   // Etapa 8: Micro-reorientação sutil em atenção social (presença estável ou atenção recente)
   // Rara, discreta (±2° a ±4°), com cooldown longo (40-70s) e nunca competindo com ações espontâneas
   if (isSocialAttentionActive(nowMs) && (nowMs - lastSocialReorientMs_ >= socialReorientCooldownMs_)) {
-    // 25% de chance de micro-ajuste durante um tick ocioso quando o cooldown expirou
-    if ((esp_random() % 100) < 25) {
+    bool inRecentWave = (lastWaveMs_ > 0 && (nowMs - lastWaveMs_ < 20000));
+    // 25% de chance de micro-ajuste durante um tick ocioso quando o cooldown expirou e sem wave imediata
+    if (!inRecentWave && ((esp_random() % 100) < 25)) {
       lastSocialReorientMs_ = nowMs;
       socialReorientCooldownMs_ = 40000 + (esp_random() % 30001); // 40-70s cooldown
+      lastAction_ = BehaviorDecision::SOCIAL_MICRO_ADJUST;
       logState("SOCIAL_ATTENTION");
       logDecision("SOCIAL_ATTENTION", BehaviorDecision::SOCIAL_MICRO_ADJUST);
       return BehaviorDecision::SOCIAL_MICRO_ADJUST;

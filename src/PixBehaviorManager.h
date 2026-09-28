@@ -8,7 +8,8 @@ enum class BehaviorEvent : uint8_t {
   TOUCH,
   IDLE_TICK,
   WAVE,
-  CONVERSATION_TURN_END
+  CONVERSATION_TURN_END,
+  LIFT_RETURN
 };
 
 enum class BehaviorDecision : uint8_t {
@@ -77,6 +78,13 @@ class PixBehaviorManager {
   bool isUserPresent() const { return userPresent_; }
   bool isSocialAttentionActive(uint32_t nowMs) const;
 
+  // Etapa 9: Coerência contextual pós-interação
+  BehaviorDecision lastAction() const { return lastAction_; }
+  uint32_t lastConversationEndMs() const { return lastConversationEndMs_; }
+  uint32_t lastTouchMs() const { return lastTouchMs_; }
+  uint32_t lastWaveMs() const { return lastWaveMs_; }
+  uint32_t lastLiftReturnMs() const { return lastLiftReturnMs_; }
+
   static const char* decisionToString(BehaviorDecision d);
   static const char* eventToString(BehaviorEvent e);
 
@@ -97,6 +105,13 @@ class PixBehaviorManager {
   uint32_t lastAfterglowUpdateMs_ = 0;
 
   uint32_t lastInteractionMs_ = 0;
+
+  // Etapa 9: Histórico contextual de interações recentes
+  uint32_t lastConversationEndMs_ = 0;
+  uint32_t lastTouchMs_ = 0;
+  uint32_t lastWaveMs_ = 0;
+  uint32_t lastLiftReturnMs_ = 0;
+  BehaviorDecision lastAction_ = BehaviorDecision::NO_ACTION;
 
   bool userPresent_ = false;
   uint32_t lastSocialReorientMs_ = 0;
