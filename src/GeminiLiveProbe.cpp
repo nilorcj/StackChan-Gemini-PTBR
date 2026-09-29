@@ -264,12 +264,15 @@ void GeminiLiveProbe::disconnect(bool intentional, const char* finalEmotion) {
   intentional_disconnect_ = intentional;
   if (intentional) {
     intentional_disconnect_emotion_ = finalEmotion ? finalEmotion : "neutral";
-    session_resumption_handle_ = "";
+    // Preserva session_resumption_handle_ por até 5 minutos (SESSION_RESUMPTION_TTL_MS)
+    // para viabilizar retomada de sessão recente após breve período em repouso/sleep.
   }
   pending_start_recording_ = false;
   pending_text_turn_ = false;
   resume_conversation_after_text_ = false;
   pending_text_ = "";
+  initial_history_configured_ = false;
+  initial_history_pending_ = false;
   if (realtime_recording_) stopRealtimeRecord();
   mic_ready_for_speech_ = false;
   realtime_recording_ = false;
@@ -398,19 +401,6 @@ void GeminiLiveProbe::loop() {
   }
 
   if (connect_requested_ || connected_) {
-    uint32_t nowWs = millis();
-    if (last_ws_loop_ms_ > 0) {
-      uint32_t gap = nowWs - last_ws_loop_ms_;
-      if (gap > max_ws_loop_gap_ms_) max_ws_loop_gap_ms_ = gap;
-      if (gap >= 50) {
-        Serial.printf("[PERF:WS] ws_loop_gap_ms=%u ws_loop_gap_max_ms=%u in_speech=%d tool_in_flight=%d\n",
-                      static_cast<unsigned>(gap),
-                      static_cast<unsigned>(max_ws_loop_gap_ms_),
-                      isSpeaking() ? 1 : 0,
-                      tool_call_in_flight_ ? 1 : 0);
-      }
-    }
-    last_ws_loop_ms_ = nowWs;
     ws_.loop();
   }
   if (realtime_recording_) recordAndSendAudioChunk();
@@ -746,10 +736,39 @@ void GeminiLiveProbe::sendSetup() {
   setup["inputAudioTranscription"].to<JsonObject>();
   setup["outputAudioTranscription"].to<JsonObject>();
 
-  // Only include session resumption when a valid handle was acquired
-  if (session_resumption_handle_.length()) {
+  // Include session resumption when a valid handle was acquired within the TTL window (5 min)
+  bool isHandleValid = (session_resumption_handle_.length() > 0) &&
+                       (session_resumption_saved_ms_ > 0) &&
+                       (millis() - session_resumption_saved_ms_ < SESSION_RESUMPTION_TTL_MS);
+
+  if (isHandleValid) {
     setup["sessionResumption"]["handle"] = session_resumption_handle_;
-    Serial.printf("GeminiLive: resuming session with handle %s\n", session_resumption_handle_.c_str());
+    resumption_attempted_ = true;
+    session_resumed_ = false;
+    initial_history_configured_ = false;
+    initial_history_pending_ = false;
+    Serial.printf("GeminiLive: attempting session resumption with handle %s (age %lu s)\n",
+                  session_resumption_handle_.c_str(),
+                  static_cast<unsigned long>((millis() - session_resumption_saved_ms_) / 1000));
+  } else {
+    if (session_resumption_handle_.length() > 0) {
+      Serial.println("GeminiLive: session resumption handle expired (>5 min); starting fresh session");
+      session_resumption_handle_ = "";
+      session_resumption_saved_ms_ = 0;
+    }
+    resumption_attempted_ = false;
+    session_resumed_ = false;
+
+    // Sessão nova: habilita historyConfig oficial se houver diálogo recente no ring
+    if (recent_dialogue_ring_.hasRecentDialogue(millis())) {
+      setup["historyConfig"]["initialHistoryInClientContent"] = true;
+      initial_history_configured_ = true;
+      initial_history_pending_ = true;
+      Serial.println("GeminiLive: enabled historyConfig.initialHistoryInClientContent for new session");
+    } else {
+      initial_history_configured_ = false;
+      initial_history_pending_ = false;
+    }
   }
   auto realtimeInputConfig = setup["realtimeInputConfig"].to<JsonObject>();
   auto automaticActivityDetection = realtimeInputConfig["automaticActivityDetection"].to<JsonObject>();
@@ -815,7 +834,7 @@ void GeminiLiveProbe::sendSetup() {
       "1. Quando o usuário te informar explicitamente fatos duráveis sobre ele, você, rotina, criador ou preferências (ex: 'Meu nome é Nilo Júnior', 'Nilo Júnior é o criador da Pix', 'O usuário prefere respostas curtas'), chame a ferramenta remember_fact para gravá-los de forma durável, informando uma chave curta adequada (ex: key='user_name', key='creator', key='user_preference'). "
       "2. Use remember_fact SOMENTE para fatos duráveis e explicitamente fornecidos pelo usuário. NUNCA salve conversa casual, perguntas, cumprimentos, inferências próprias sem confirmação ou conteúdo temporário. "
       "3. NUNCA salve senhas, PINs ou segredos em remember_fact (se o usuário pedir expressamente para guardar segredos, use remember_private_memory). "
-      "4. Quando o usuário perguntar sobre o nome dele, preferências ou fatos passados ('qual é o meu nome?', 'quem te criou?'), chame SEMPRE search_memory antes de responder se a informação não estiver evidente nos seus fatos conhecidos. Nunca invente ou afirme que lembra sem consultar search_memory. "
+      "4. REGRA MANDATÓRIA DE CONSULTA À MEMÓRIA (search_memory): Sempre que o usuário perguntar sobre fatos passados pessoais, preferências, planos, pessoas, projetos ou tópicos conversados anteriormente (ex: 'você lembra da minha viagem?', 'onde eu disse que vou?', 'o que eu falei ontem sobre isso?', 'qual era o nome daquela pessoa que mencionei?'), e essa informação NÃO estiver explicitamente evidente no seu contexto atual carregado, CHAME OBRIGATORIAMENTE a ferramenta search_memory antes de responder. NUNCA afirme ou invente que esqueceu, que não sabe, que não lembra ou que 'olhou na memória e não achou nada' sem ANTES chamar search_memory e consultar o retorno da ferramenta. Se search_memory encontrar a informação, use-a na resposta com naturalidade. "
       "DATA, HORA E DIA DA SEMANA: "
       "Quando o usuário perguntar que horas são, que dia é hoje, qual o dia da semana ou qualquer pergunta sobre data/hora atual ('que horas são?', 'que dia é hoje?', 'que dia da semana é hoje?', 'qual a data e hora agora?'), CHAME OBRIGATORIAMENTE a ferramenta get_current_datetime antes de responder. Nunca invente ou chute horários ou datas sem consultar get_current_datetime. A resposta de get_current_datetime JÁ CONTÉM a hora e a data locais finais e exatas; fale diretamente a hora e data informadas pela ferramenta, NUNCA aplique recálculo ou conversão de fuso horário por conta própria.";
   if (system_prompt_.length()) {
@@ -850,6 +869,7 @@ void GeminiLiveProbe::sendSetup() {
 
 void GeminiLiveProbe::sendTextTurn(const String& text) {
   if (!isReady()) return;
+  recent_dialogue_ring_.onUserTranscript(text, millis());
   // Gemini Live API official schema for client text input turn triggering speech response
   JsonDocument doc;
   auto turns = doc["clientContent"]["turns"].to<JsonArray>();
@@ -864,6 +884,55 @@ void GeminiLiveProbe::sendTextTurn(const String& text) {
   last_activity_ms_ = millis();
   ws_.sendTXT(out);
   Serial.printf("GeminiLive: sent clientContent text turn chars=%u\n", static_cast<unsigned>(text.length()));
+}
+
+void GeminiLiveProbe::sendRecentDialogueHistory() {
+  if (session_resumed_) return; // Não injeta se a sessão foi retomada com sucesso via sessionResumption
+  uint32_t nowMs = millis();
+  if (!recent_dialogue_ring_.hasRecentDialogue(nowMs)) return;
+
+  Serial.println("GeminiLive: sending initial history turns via clientContent (roles user/model)");
+
+  JsonDocument doc;
+  auto turns = doc["clientContent"]["turns"].to<JsonArray>();
+
+  for (size_t i = 0; i < recent_dialogue_ring_.count(); ++i) {
+    const auto* t = recent_dialogue_ring_.getTurn(i);
+    if (!t || t->timestampMs == 0 || (nowMs - t->timestampMs >= RecentDialogueRing::kMaxAgeMs)) {
+      continue;
+    }
+    if (t->userText.length() > 0) {
+      auto userTurn = turns.add<JsonObject>();
+      userTurn["role"] = "user";
+      userTurn["parts"].to<JsonArray>().add<JsonObject>()["text"] = t->userText;
+    }
+    if (t->pixText.length() > 0) {
+      auto modelTurn = turns.add<JsonObject>();
+      modelTurn["role"] = "model";
+      modelTurn["parts"].to<JsonArray>().add<JsonObject>()["text"] = t->pixText;
+    }
+  }
+
+  if (turns.size() == 0) return;
+
+  // 1. Envia os turnos de histórico com turnComplete = false conforme protocolo
+  doc["clientContent"]["turnComplete"] = false;
+  String out;
+  serializeJson(doc, out);
+  last_activity_ms_ = millis();
+  ws_.sendTXT(out);
+  Serial.printf("GeminiLive: sent initial history turns count=%u turnComplete=false\n", static_cast<unsigned>(turns.size()));
+
+  // 2. Finaliza o carregamento do histórico inicial conforme protocolo oficial (turnComplete = true).
+  // Com historyConfig.initialHistoryInClientContent ativo no setup, este turnComplete encerra
+  // a ingestão de histórico sem provocar resposta vocal do modelo, liberando o início do realtimeInput.
+  JsonDocument finishDoc;
+  finishDoc["clientContent"]["turnComplete"] = true;
+  String finishOut;
+  serializeJson(finishDoc, finishOut);
+  last_activity_ms_ = millis();
+  ws_.sendTXT(finishOut);
+  Serial.println("GeminiLive: initial history finalized (turnComplete=true); ready for realtimeInput");
 }
 
 bool GeminiLiveProbe::requestTextTurn(const String& text) {
@@ -1283,6 +1352,7 @@ void GeminiLiveProbe::requestSessionEnd(const String& reason) {
 
 void GeminiLiveProbe::recordAndSendAudioChunk() {
   if (!rec_buf_) return;
+  if (initial_history_pending_) return; // Bloqueia áudio do mic enquanto o histórico inicial estiver em carga
   if (!mic_ready_for_speech_) mic_ready_for_speech_ = false;
   if (!continuous_conversation_ && millis() - record_started_ms_ > REALTIME_RECORD_TIMEOUT_MS) {
     Serial.println("GeminiLive: realtime recording timeout");
@@ -1701,6 +1771,17 @@ void GeminiLiveProbe::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
       self_->resume_conversation_after_text_ = false;
       self_->pending_text_ = "";
       self_->connect_requested_ = false;
+      self_->initial_history_configured_ = false;
+      self_->initial_history_pending_ = false;
+
+      // Se a tentativa de retomada de sessão foi rejeitada ou falhou antes do setupComplete,
+      // descarta o handle para que a próxima conexão seja limpa
+      if (self_->resumption_attempted_ && !self_->session_resumed_) {
+        Serial.println("GeminiLive: session resumption rejected by server; discarding handle for fresh session");
+        self_->session_resumption_handle_ = "";
+        self_->session_resumption_saved_ms_ = 0;
+        self_->resumption_attempted_ = false;
+      }
 
       // Auto-reconnect if drop was unintentional, WiFi is connected, and not in DND
       if (!self_->intentional_disconnect_ && was_active && WiFi.status() == WL_CONNECTED && !self_->isDoNotDisturb()) {
@@ -1769,6 +1850,18 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
     setup_complete_ = true;
     last_activity_ms_ = millis();
     Serial.println("Status: Gemini setup ok");
+    if (resumption_attempted_) {
+      session_resumed_ = true;
+      initial_history_configured_ = false;
+      initial_history_pending_ = false;
+      Serial.println("GeminiLive: session resumption confirmed by server (setupComplete)");
+    } else {
+      session_resumed_ = false;
+      if (initial_history_configured_) {
+        sendRecentDialogueHistory();
+        initial_history_pending_ = false;
+      }
+    }
     if (pending_text_turn_) {
       String toSend = pending_text_;
       pending_text_turn_ = false;
@@ -1803,6 +1896,7 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
     if (sru["resumable"] | false) {
       if (newHandle && newHandle[0]) {
         session_resumption_handle_ = String(newHandle);
+        session_resumption_saved_ms_ = millis();
         Serial.printf("GeminiLive: session resumption handle: %s\n", newHandle);
       }
     }
@@ -2041,6 +2135,7 @@ void GeminiLiveProbe::handleTranscription(JsonVariant serverContent) {
                     speech_end_seen_ ? 1 : 0,
                     static_cast<unsigned long>(gate_silence_chunks_injected_));
       if (memory_) memory_->appendDialogue("user", currentInput, "live_input_transcription");
+      recent_dialogue_ring_.onUserTranscript(currentInput, millis());
 
       // Strict matching for unambiguous physical head gestures (look_left, look_right, center_head)
       // Normalize: lowercase, strip trailing punctuation, collapse spaces
@@ -2141,6 +2236,7 @@ void GeminiLiveProbe::handleTranscription(JsonVariant serverContent) {
   if (outputText && outputText[0]) {
     Serial.printf("GeminiLive: output transcript chars=%u\n", static_cast<unsigned>(strlen(outputText)));
     appendOutputTranscriptChunk(outputText);
+    recent_dialogue_ring_.onPixTranscriptChunk(outputText, millis());
   }
 }
 

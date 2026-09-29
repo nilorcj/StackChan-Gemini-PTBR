@@ -992,7 +992,8 @@ void loop() {
 
   // E2.1 B: Opportunistic calendar prefetch when system is strictly idle
   static uint32_t s_last_cal_idle_refresh_ms = 0;
-  if (systemIdle && (now - s_last_cal_idle_refresh_ms >= 1800000 || !googleCalendar.hasCache() || !googleCalendar.isCacheValidForToday())) {
+  uint32_t calRefreshInterval = (!googleCalendar.hasCache() || !googleCalendar.isCacheValidForToday()) ? 60000 : 1800000;
+  if (systemIdle && (now - s_last_cal_idle_refresh_ms >= calRefreshInterval)) {
     if (ESP.getFreeHeap() >= 32000 && ESP.getMaxAllocHeap() >= 12000) {
       s_last_cal_idle_refresh_ms = now;
       Serial.printf("[GoogleCalendar] opportunistic idle refresh starting (freeHeap=%u maxAllocHeap=%u)...\n",
@@ -1420,35 +1421,47 @@ void loop() {
     g_last_human_activity_ms = now;
   }
 
-  // ENV III: Telemetria ambiental basica em baixa frequencia (3000ms).
-  // Totalmente desvinculado de gestos, sopro, fala, presenca ou emocoes.
-  if (unitPaHub.isFound() && !gemini.isSpeaking() && now - g_last_sensor_read_ms >= 3000) {
-    g_last_sensor_read_ms = now;
-    uint16_t distanceMm = 0;
-    UnitPaHubManager::EnvData env;
-    if (unitPaHub.readSensors(distanceMm, env)) {
-      if (distanceMm == 0 && g_current_distance_mm > 0) distanceMm = g_current_distance_mm;
-      if (env.valid) {
-        g_latest_temp = env.temperature;
-        g_latest_hum = env.humidity;
-        g_latest_pressure = env.pressure;
-      }
-      Serial.printf("Units: tof_mm=%u env=%s temp_c=%.2f humidity=%.2f pressure_hpa=%.2f\n",
-                    static_cast<unsigned>(distanceMm), env.valid ? "ok" : "missing",
-                    env.temperature, env.humidity, env.pressure);
+  // ENV III: Telemetria ambiental cooperativa e não-bloqueante (cadência ~6000ms).
+  // Sequência SHT30 não bloqueia loop (TRIGGER -> wait >=25ms -> COLLECT + QMP6988).
+  // Suspende/aborta ciclo se houver gravação de mic ou reprodução de fala.
+  static uint32_t s_last_env_cycle_ms = 0;
+  bool audioBusy = gemini.isSpeaking() || gemini.isRecording();
 
-      const uint32_t sensorNow = millis();
+  if (audioBusy && unitPaHub.isEnvTriggered()) {
+    unitPaHub.abortEnvMeasurement();
+  }
 
-      // Conexão proativa com Gemini Live quando o usuário estiver presente à mesa
-      static uint32_t s_last_proactive_connect_ms = 0;
-      if (g_tofDetector.isUserPresent() && !gemini.isReady() && !gemini.isDoNotDisturb() &&
-          WiFi.status() == WL_CONNECTED && sensorNow - s_last_proactive_connect_ms > 8000) {
-        s_last_proactive_connect_ms = sensorNow;
-        Serial.println("Presence: usuário na mesa e Gemini desconectado -> reconectando proativamente");
-        gemini.connect();
+  if (unitPaHub.isFound() && !audioBusy) {
+    if (!unitPaHub.isEnvTriggered()) {
+      if (now - s_last_env_cycle_ms >= 6000) {
+        s_last_env_cycle_ms = now;
+        unitPaHub.triggerEnvMeasurement();
       }
     } else {
-      Serial.println("Units: read failed");
+      if (unitPaHub.envTriggerAgeMs() >= 25) {
+        UnitPaHubManager::EnvData env;
+        if (unitPaHub.collectEnvMeasurement(env)) {
+          if (env.valid) {
+            g_latest_temp = env.temperature;
+            g_latest_hum = env.humidity;
+            g_latest_pressure = env.pressure;
+          }
+          Serial.printf("Units: env=%s temp_c=%.2f humidity=%.2f pressure_hpa=%.2f\n",
+                        env.valid ? "ok" : "missing",
+                        env.temperature, env.humidity, env.pressure);
+
+          const uint32_t sensorNow = millis();
+
+          // Conexão proativa com Gemini Live quando o usuário estiver presente à mesa
+          static uint32_t s_last_proactive_connect_ms = 0;
+          if (g_tofDetector.isUserPresent() && !gemini.isReady() && !gemini.isDoNotDisturb() &&
+              WiFi.status() == WL_CONNECTED && sensorNow - s_last_proactive_connect_ms > 8000) {
+            s_last_proactive_connect_ms = sensorNow;
+            Serial.println("Presence: usuário na mesa e Gemini desconectado -> reconectando proativamente");
+            gemini.connect();
+          }
+        }
+      }
     }
   }
 

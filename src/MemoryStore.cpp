@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <SD.h>
 #include <time.h>
+#include <algorithm>
 #include <vector>
 
 MemoryStore::MemoryStore(fs::FS& fs, const char* root) : _fs(fs), _root(root) {}
@@ -253,12 +254,15 @@ String MemoryStore::factsPreview(size_t maxChars) {
   File f = _fs.open(factsPath(), FILE_READ);
   if (!f) return "";
 
-  // Collect latest entry per key
-  struct FactItem {
+  // Collect latest unique entry per key with recency tracking
+  struct FactEntry {
     String key;
     String text;
+    String category;
+    uint32_t order;
   };
-  std::vector<FactItem> items;
+  std::vector<FactEntry> entries;
+  uint32_t globalOrder = 0;
 
   while (f.available()) {
     String line = f.readStringUntil('\n');
@@ -271,31 +275,83 @@ String MemoryStore::factsPreview(size_t maxChars) {
     String candKey = String((const char*)(doc["key"] | ""));
     candKey.trim();
     candKey.toLowerCase();
+    String candCat = String((const char*)(doc["category"] | ""));
+    candCat.trim();
+    candCat.toLowerCase();
 
     if (candKey.length()) {
       bool found = false;
-      for (auto& it : items) {
+      for (auto& it : entries) {
         if (it.key == candKey) {
           it.text = text;
+          it.category = candCat;
+          it.order = ++globalOrder;
           found = true;
           break;
         }
       }
-      if (!found) items.push_back({candKey, text});
+      if (!found) {
+        entries.push_back({candKey, text, candCat, ++globalOrder});
+      }
     } else {
-      items.push_back({"", text});
+      entries.push_back({"", text, candCat, ++globalOrder});
     }
   }
   f.close();
 
+  if (entries.empty()) return "";
+
+  auto isCoreFact = [](const FactEntry& e) -> bool {
+    const String& k = e.key;
+    const String& c = e.category;
+    if (c == "identity" || c == "profile" || c == "core" || c == "creator") return true;
+    if (k == "user_name" || k == "name" || k == "user" || k == "usuario") return true;
+    if (k == "creator" || k == "creator_update" || k == "criador") return true;
+    if (k.indexOf("work") >= 0 || k.indexOf("trabalho") >= 0 || k.indexOf("ppi") >= 0 || k.indexOf("job") >= 0) return true;
+    if (k == "bot_location" || k == "location" || k.indexOf("brasilia") >= 0) return true;
+    if (k.indexOf("love") >= 0 || k.indexOf("fran") >= 0 || k.indexOf("family") >= 0) return true;
+    return false;
+  };
+
   String out = "";
-  for (const auto& it : items) {
-    String entry = "- " + it.text;
-    if (it.key.length()) entry += " (chave: " + it.key + ")";
-    entry += "\n";
-    if (out.length() + entry.length() > maxChars) break;
-    out += entry;
+  std::vector<bool> included(entries.size(), false);
+
+  // 1. Add core / essential facts first (user identity, creator, workplace, bot location)
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (isCoreFact(entries[i])) {
+      String entry = "- " + entries[i].text;
+      if (entries[i].key.length()) entry += " (chave: " + entries[i].key + ")";
+      entry += "\n";
+      if (out.length() + entry.length() <= maxChars) {
+        out += entry;
+        included[i] = true;
+      }
+    }
   }
+
+  // 2. Collect non-core facts sorted by recency (most recent / highest order first)
+  std::vector<size_t> nonCoreIndices;
+  nonCoreIndices.reserve(entries.size());
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (!included[i]) {
+      nonCoreIndices.push_back(i);
+    }
+  }
+  std::sort(nonCoreIndices.begin(), nonCoreIndices.end(), [&](size_t a, size_t b) {
+    return entries[a].order > entries[b].order;
+  });
+
+  // 3. Fill the remaining budget with the most recent non-core facts
+  for (size_t idx : nonCoreIndices) {
+    String entry = "- " + entries[idx].text;
+    if (entries[idx].key.length()) entry += " (chave: " + entries[idx].key + ")";
+    entry += "\n";
+    if (out.length() + entry.length() <= maxChars) {
+      out += entry;
+      included[idx] = true;
+    }
+  }
+
   return out;
 }
 
@@ -590,6 +646,11 @@ int MemoryStore::scoreMemoryText(const String& queryLower, const String& textLow
       if (tok.length() >= 4) {
         if (textLower.indexOf(tok) >= 0) score += 3;
         if (tagsLower.indexOf(tok) >= 0) score += 5;
+        if (tok.length() >= 5) {
+          String stem = tok.substring(0, tok.length() - 1);
+          if (textLower.indexOf(stem) >= 0) score += 2;
+          if (tagsLower.indexOf(stem) >= 0) score += 3;
+        }
       }
     }
     start = end + 1;
@@ -720,11 +781,12 @@ String MemoryStore::searchMemory(const String& query, size_t maxResults, size_t 
       for (const auto& it : items) {
         if (dateFilter.length() && it.observedDate != dateFilter) continue;
         String lower = it.text; lower.toLowerCase();
-        String tagsLower = it.tags; tagsLower.toLowerCase();
+        String tagsLower = it.key + " " + it.tags; tagsLower.toLowerCase();
         int score = scoreMemoryText(qLower, lower, tagsLower, it.observedDate);
         if (score > 0 || !qLower.length() ||
             (it.key == "user_name" && (qLower.indexOf("nome") >= 0 || qLower.indexOf("chamo") >= 0 || qLower.indexOf("quem") >= 0)) ||
-            (it.key == "creator" && (qLower.indexOf("criador") >= 0 || qLower.indexOf("quem") >= 0))) {
+            (it.key == "creator" && (qLower.indexOf("criador") >= 0 || qLower.indexOf("quem") >= 0)) ||
+            (it.key.indexOf("work") >= 0 && (qLower.indexOf("trabalh") >= 0 || qLower.indexOf("emprego") >= 0 || qLower.indexOf("servi") >= 0 || qLower.indexOf("ppi") >= 0))) {
           if (score <= 0) score = 6;
           score += 4;
           String j = "{\"layer\":\"fact\",\"score\":" + String(score) +

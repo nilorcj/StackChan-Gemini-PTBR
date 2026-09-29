@@ -57,6 +57,11 @@ class UnitPaHubManager {
     
     // Auto-detect PaHub multiplexer at 0x77 (configured address) first
     uint8_t probeAddrs[] = {0x77, pahubAddr_, 0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76};
+    for (uint8_t addr : probeAddrs) {
+      wire_->beginTransmission(addr);
+      wire_->write(0x00);
+      wire_->endTransmission();
+    }
     pahubFound_ = false;
     for (uint8_t addr : probeAddrs) {
       wire_->beginTransmission(addr);
@@ -102,6 +107,7 @@ class UnitPaHubManager {
     if (!selectChannel(CH_ENV)) return false;
     bool envOk = sht_.begin(wire_, SHT3X_I2C_ADDR, 2, 1, 100000U);
     envOk = qmp_.begin(wire_, QMP6988_SLAVE_ADDRESS_L, 2, 1, 100000U) && envOk;
+    wire_->setTimeOut(50); // Re-apply safe timeout after third-party begin calls
     envReady_ = envOk;
     disableAllChannels();
     Serial.printf("UnitPaHub: drivers tof=%s env=%s\n", tofReady_ ? "ok" : "failed", envOk ? "ok" : "failed");
@@ -324,19 +330,117 @@ class UnitPaHubManager {
     bool valid = false;
   };
 
-  EnvData readEnvData() {
-    EnvData data;
-    if (!selectChannel(CH_ENV)) return data;
-    bool shtOk = sht_.update();
-    bool qmpOk = qmp_.update();
-    if (shtOk) {
-      data.temperature = sht_.cTemp;
-      data.humidity = sht_.humidity;
+  enum class EnvState : uint8_t {
+    IDLE = 0,
+    TRIGGERED
+  };
+
+  static uint8_t checkCrc8(const uint8_t* data, size_t len) {
+    uint8_t crc = 0xFF;
+    for (size_t i = 0; i < len; i++) {
+      crc ^= data[i];
+      for (uint8_t bit = 8; bit > 0; --bit) {
+        if (crc & 0x80) {
+          crc = (crc << 1) ^ 0x31;
+        } else {
+          crc = (crc << 1);
+        }
+      }
     }
-    if (qmpOk) data.pressure = qmp_.pressure / 100.0f;
-    data.valid = shtOk || qmpOk;
+    return crc;
+  }
+
+  bool triggerEnvMeasurement() {
+    if (!envReady_ || !pahubFound_ || !wire_) return false;
+    if (!selectChannel(CH_ENV)) {
+      disableAllChannels();
+      return false;
+    }
+    wire_->beginTransmission(SHT3X_I2C_ADDR);
+    wire_->write(0x24);
+    wire_->write(0x00);
+    uint8_t err = wire_->endTransmission();
     disableAllChannels();
-    return data;
+
+    if (err == 0) {
+      envState_ = EnvState::TRIGGERED;
+      envTriggerMs_ = millis();
+      return true;
+    }
+    envState_ = EnvState::IDLE;
+    return false;
+  }
+
+  bool isEnvTriggered() const { return envState_ == EnvState::TRIGGERED; }
+  uint32_t envTriggerAgeMs() const { return (envState_ == EnvState::TRIGGERED) ? (millis() - envTriggerMs_) : 0; }
+  void abortEnvMeasurement() {
+    if (envState_ == EnvState::TRIGGERED && pahubFound_ && wire_) {
+      if (selectChannel(CH_ENV)) {
+        wire_->requestFrom(static_cast<uint8_t>(SHT3X_I2C_ADDR), static_cast<uint8_t>(6));
+        while (wire_->available()) {
+          wire_->read();
+        }
+        disableAllChannels();
+      }
+    }
+    envState_ = EnvState::IDLE;
+  }
+
+  bool collectEnvMeasurement(EnvData& out) {
+    if (envState_ != EnvState::TRIGGERED) return false;
+    if (envTriggerAgeMs() > 200) {
+      abortEnvMeasurement();
+      return false;
+    }
+    envState_ = EnvState::IDLE; // Reset state regardless of outcome
+
+    if (!selectChannel(CH_ENV)) {
+      disableAllChannels();
+      return false;
+    }
+
+    uint8_t data[6] = {0};
+    uint8_t count = wire_->requestFrom(static_cast<uint8_t>(SHT3X_I2C_ADDR), static_cast<uint8_t>(6));
+    bool shtOk = false;
+    if (count == 6) {
+      for (int i = 0; i < 6; i++) {
+        data[i] = static_cast<uint8_t>(wire_->read());
+      }
+      uint8_t tempCrc = checkCrc8(&data[0], 2);
+      uint8_t humCrc = checkCrc8(&data[3], 2);
+      if (tempCrc == data[2] && humCrc == data[5]) {
+        latestEnvData_.temperature = ((((data[0] * 256.0f) + data[1]) * 175.0f) / 65535.0f) - 45.0f;
+        latestEnvData_.humidity = ((((data[3] * 256.0f) + data[4]) * 100.0f) / 65535.0f);
+        shtOk = true;
+      } else {
+        ++sht30CrcErrorCount_;
+      }
+    }
+
+    bool qmpOk = qmp_.update();
+    if (qmpOk) {
+      latestEnvData_.pressure = qmp_.pressure / 100.0f;
+    }
+
+    disableAllChannels();
+
+    latestEnvData_.valid = shtOk || qmpOk;
+    out = latestEnvData_;
+    return latestEnvData_.valid;
+  }
+
+  const EnvData& latestEnvData() const { return latestEnvData_; }
+  uint32_t sht30CrcErrorCount() const { return sht30CrcErrorCount_; }
+
+  EnvData readEnvData() {
+    // Non-blocking fallback: returns latest cached valid data without executing blocking delay
+    if (latestEnvData_.valid) return latestEnvData_;
+    if (envState_ == EnvState::TRIGGERED && envTriggerAgeMs() >= 20) {
+      EnvData d;
+      collectEnvMeasurement(d);
+      return d;
+    }
+    return latestEnvData_;
   }
 
   bool isFound() const { return pahubFound_; }
@@ -367,4 +471,8 @@ class UnitPaHubManager {
   bool envReady_ = false;
   SHT3X sht_;
   QMP6988 qmp_;
+  EnvState envState_ = EnvState::IDLE;
+  uint32_t envTriggerMs_ = 0;
+  EnvData latestEnvData_;
+  uint32_t sht30CrcErrorCount_ = 0;
 };

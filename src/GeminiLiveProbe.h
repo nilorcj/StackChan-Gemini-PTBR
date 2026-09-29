@@ -6,6 +6,7 @@
 #include <M5StackChan.h>
 #include "GeminiToolBridge.h"
 #include "EmotionController.h"
+#include "RecentDialogueRing.h"
 
 class MemoryStore;
 
@@ -67,6 +68,8 @@ class GeminiLiveProbe {
            isInPostSpeechDebounce();
   }
   bool continuousConversation() const { return continuous_conversation_; }
+  bool sessionResumed() const { return session_resumed_; }
+  const RecentDialogueRing& recentDialogueRing() const { return recent_dialogue_ring_; }
   bool isMicReadyForSpeech() const { return mic_ready_for_speech_; }
   uint16_t lastMicRms() const { return last_mic_rms_; }
   uint16_t lastMicPeak() const { return last_mic_peak_; }
@@ -258,8 +261,6 @@ class GeminiLiveProbe {
   uint32_t rebuffer_wait_count_ = 0;
   uint32_t tool_call_gap_count_ = 0;
   uint32_t max_loop_duration_ms_ = 0;
-  uint32_t last_ws_loop_ms_ = 0;
-  uint32_t max_ws_loop_gap_ms_ = 0;
   bool tool_call_in_flight_ = false;
   uint8_t min_dma_depth_during_play_ = 255;
   uint32_t audio_backpressure_wait_ms_ = 0;
@@ -311,7 +312,14 @@ class GeminiLiveProbe {
   String intentional_disconnect_emotion_ = "neutral";
   String pending_text_;
   String transcript_output_buffer_;
+  static constexpr uint32_t SESSION_RESUMPTION_TTL_MS = 300000; // Janela local de 5 minutos para reuso do handle
   String session_resumption_handle_;
+  uint32_t session_resumption_saved_ms_ = 0;
+  bool resumption_attempted_ = false;
+  bool session_resumed_ = false;
+  bool initial_history_configured_ = false;
+  bool initial_history_pending_ = false;
+  RecentDialogueRing recent_dialogue_ring_;
   const char* api_key_ = nullptr;
   uint32_t currentUserTurnId_ = 0;
   bool utterance_input_received_ = false;
@@ -331,6 +339,7 @@ class GeminiLiveProbe {
   void cancelWaitingModelGuard(const char* reason = nullptr);
   void checkWaitingModelGuard();
   void recoverFromWaitingModel();
+  void sendRecentDialogueHistory();
   String encodeBase64(const uint8_t* input, size_t size);
   int decodeBase64(const char* input, int size, char* output);
 };
