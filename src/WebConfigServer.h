@@ -66,6 +66,7 @@ class WebConfigServer {
   void handleMemoryDialogues();
   void handleMemorySummaries();
   void handleMemorySearch();
+  void handleMemoryFacts();
   void handleMemoryStats();
   void handleMemorySummaryConfigGet();
   void handleMemorySummaryConfigSave();

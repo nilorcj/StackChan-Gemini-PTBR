@@ -7,6 +7,7 @@
 #include <atomic>
 
 class GeminiLiveProbe;
+class GoogleCalendarClient;
 
 class LiveFeedsManager {
  public:
@@ -69,6 +70,7 @@ class LiveFeedsManager {
   void loop();
 
   void setGeminiLiveProbe(const GeminiLiveProbe* gemini) { gemini_ = gemini; }
+  void setGoogleCalendar(GoogleCalendarClient* cal) { calendar_ = cal; }
   void setSystemIdle(bool idle) { systemIdle_.store(idle, std::memory_order_release); }
 
   void triggerBootPrefetch();
@@ -76,9 +78,11 @@ class LiveFeedsManager {
   bool isBootPrefetchCompleted() const { return bootPrefetchCompleted_.load(std::memory_order_acquire); }
   bool isBootPrefetchAborted() const { return bootPrefetchAborted_.load(std::memory_order_acquire); }
   bool isRequestInFlight() const { return requestInFlight_.load(std::memory_order_acquire); }
+  bool isCalendarJobInFlight() const { return calendarJobInFlight_.load(std::memory_order_acquire); }
 
   void requestRefresh();
   void forceRefresh();
+  void requestCalendarRefresh();
 
   // Thread-safe copy-out getters (no heap allocation, zero String under mutex)
   LiveFeedsSnapshot getSnapshot() const;
@@ -127,6 +131,19 @@ class LiveFeedsManager {
 
   static void workerTaskThunk(void* param);
   void workerTaskLoop();
+
+  GoogleCalendarClient* calendar_ = nullptr;
+  std::atomic<bool> calendarRefreshRequested_{false};
+  std::atomic<bool> calendarJobInFlight_{false};
+  uint32_t lastCalendarFetchMs_ = 0;
+  uint32_t lastCalendarAttemptMs_ = 0;
+  uint32_t calendarNextRetryMs_ = 0;
+  static constexpr uint32_t kCalendarRefreshIntervalMs = 30 * 60 * 1000UL; // 30 minutes
+  static constexpr uint32_t kCalendarFailureBackoffMs = 60 * 1000UL;      // 60 s backoff
+
+  bool canStartCalendarFetch() const;
+  bool canContinueCalendarFetch() const;
+  void executeCalendarFetch();
 
   bool isBootDeadlineExpired() const;
   void abortBootPrefetchAndPublish(const char* reason);

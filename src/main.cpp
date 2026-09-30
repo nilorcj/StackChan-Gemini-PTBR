@@ -67,6 +67,13 @@ static uint32_t g_darkness_start_ms = 0;
 static bool g_night_mode = false;
 static bool g_physical_mute = false;
 static float g_last_humidity = 0.0f;
+static bool g_pending_boot_pet = false;
+
+uint16_t getCachedTofDistanceMm() { return g_current_distance_mm; }
+bool getCachedTofPresence() { return g_tof_presence; }
+float getCachedTemp() { return g_latest_temp; }
+float getCachedHumidity() { return g_latest_hum; }
+float getCachedPressure() { return g_latest_pressure; }
 
 static const char* const kLiftPhrases[] = {
   "Ei, me coloca no chão! Não gosto de altura!",
@@ -469,6 +476,9 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
   bool wifiConnectedBefore = false;
   bool geminiConnectTriggered = false;
 
+  constexpr uint32_t kMinDashboardMs = 1800; // ~1.8 s minimum time
+  constexpr uint32_t kNoWifiMaxMs = 8000;    // ~8 s ceiling if Wi-Fi cannot connect
+
   while (millis() - startMs < durationMs) {
     M5StackChan.update();
     uint32_t now = millis();
@@ -476,10 +486,20 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
     uint32_t elapsedSec = elapsed / 1000;
     uint32_t totalSec = durationMs / 1000;
 
-    // Check touch skip (after 800ms debounce to ignore any boot touch noise)
+    // Check touch skip on screen (after ~300ms)
     auto t = M5.Touch.getDetail();
-    if (elapsed > 800 && t.wasClicked()) {
-      Serial.println("BootDashboard: skipped by user touch click");
+    if (elapsed > 300 && t.wasClicked()) {
+      Serial.printf("BootDashboard: skipped by user touch click at elapsed=%lu\n", elapsed);
+      unitPaHub.click();
+      break;
+    }
+
+    // Check PET / top touch during dashboard (after ~300ms)
+    auto touchIntensities = M5StackChan.TouchSensor.getIntensities();
+    bool topTouched = (touchIntensities[0] > 0 || touchIntensities[1] > 0 || touchIntensities[2] > 0 || M5StackChan.TouchSensor.wasSwiped());
+    if (elapsed > 300 && topTouched) {
+      Serial.printf("BootDashboard: skipped by top touch/pet at elapsed=%lu\n", elapsed);
+      g_pending_boot_pet = true;
       unitPaHub.click();
       break;
     }
@@ -494,12 +514,25 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
       Serial.printf("WiFi: connected during boot screen! ip=%s dns=%s\n",
                     WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
       configureNtpOnce();
-      liveFeeds.triggerBootPrefetch();
       webConfig.begin(configManager.webConfig());
       if (geminiConfigured && !geminiConnectTriggered) {
         geminiConnectTriggered = true;
         Serial.println("Gemini: connecting WebSocket concurrently during boot screen...");
         gemini.connect();
+      }
+    }
+
+    // Early exit conditions after minimum time (~1.8s)
+    if (elapsed >= kMinDashboardMs) {
+      bool geminiReadyOrNotNeeded = !geminiConfigured || gemini.isReady();
+      if (isWifi && geminiReadyOrNotNeeded) {
+        Serial.printf("BootDashboard: early exit (WiFi + Gemini ready) at elapsed=%lu\n", elapsed);
+        break;
+      }
+      if (!isWifi && elapsed >= kNoWifiMaxMs) {
+        Serial.printf("BootDashboard: early exit (no-WiFi ceiling %u ms) at elapsed=%lu\n",
+                      static_cast<unsigned>(kNoWifiMaxMs), elapsed);
+        break;
       }
     }
 
@@ -681,6 +714,7 @@ void setup() {
   pinMode(8, INPUT);
 
   Serial.begin(115200);
+  Serial.printf("[DIAG:BOOT] setup entry millis=%lu\n", millis());
   esp_reset_reason_t rstReason = esp_reset_reason();
   Serial.printf("CoreS3 BOOT: reset_reason=%d\n", static_cast<int>(rstReason));
   M5StackChan.begin();
@@ -717,6 +751,7 @@ void setup() {
   }
   initLtr553();
   liveFeeds.setGeminiLiveProbe(&gemini);
+  liveFeeds.setGoogleCalendar(&googleCalendar);
   liveFeeds.begin();
   // Safe defaults before SD config is loaded. ConfigManager may override after SD mount.
   ToolGatewayClient::Config gatewayConfig;
@@ -775,6 +810,7 @@ void setup() {
     bool runtime_config_exists = SD.exists("/app/StackChan/config/runtime.json");
     Serial.printf("ConfigManager init: %s\n", cfg_ok ? "ok" : "failed");
     ConfigManager::applyTimezone(configManager.config().timezoneOffset);
+    googleCalendar.refreshCachedUrl();
     if (M5.Rtc.isEnabled()) {
       M5.Rtc.setSystemTimeFromRtc();
     }
@@ -807,17 +843,20 @@ void setup() {
     bool wifiStarted = startWifiAsync(configManager);
 
     // 3. Show Graphical Boot Dashboard Screen (up to 15s max, concurrent non-blocking connection)
+    Serial.printf("[DIAG:BOOT] dashboard start millis=%lu\n", millis());
     showBootDashboardScreen(15000, geminiConfigured);
+    Serial.printf("[DIAG:BOOT] dashboard end millis=%lu isWifi=%d geminiReady=%d\n",
+                  millis(), (int)(WiFi.status() == WL_CONNECTED), (int)gemini.isReady());
 
     // 4. Post-boot screen finalization
     bool wifi_ok = (WiFi.status() == WL_CONNECTED);
     if (wifi_ok) {
       configureNtpOnce();
-      if (!googleCalendar.hasCache()) {
-        googleCalendar.prefetch(true);
+      if (configManager.config().webEnabled) {
+        auto webOpts = configManager.webConfig();
+        webConfig.begin(webOpts);
+        Serial.printf("WebConfig: started in STA mode on port %u\n", webOpts.port);
       }
-      liveFeeds.waitForBootPrefetch(2000);
-      Serial.println("[BOOT_PREFETCH] Gemini Live released");
       if (geminiConfigured && gemini.isReady()) {
         emotion.setEmotion("happy");
         g_emotion_override_until_ms = millis() + 3000;
@@ -855,9 +894,29 @@ void setup() {
 
   // Gemini API key is loaded by ConfigManager as a secret and must never be printed.
   g_last_human_activity_ms = millis();
+  Serial.printf("[DIAG:BOOT] setup exit millis=%lu g_last_human_activity_ms=%lu\n", millis(), g_last_human_activity_ms);
 }
 
 void loop() {
+  static bool s_first_loop = true;
+  if (s_first_loop) {
+    s_first_loop = false;
+    Serial.printf("[LOOP_ENTRY] millis=%lu freeHeap=%u maxAllocHeap=%u last_activity=%lu idle_age=%lu emo=%s mute=%d dnd=%d\n",
+                  millis(), static_cast<unsigned>(ESP.getFreeHeap()), static_cast<unsigned>(ESP.getMaxAllocHeap()),
+                  g_last_human_activity_ms, millis() - g_last_human_activity_ms,
+                  emotion.currentEmotion().c_str(), (int)g_physical_mute, (int)gemini.isDoNotDisturb());
+    if (g_pending_boot_pet) {
+      g_pending_boot_pet = false;
+      Serial.println("[BOOT:PET] Executing deferred boot pet in first loop()");
+      g_last_human_activity_ms = millis();
+      unitPaHub.purr();
+      emotion.setEmotion("meigo");
+      g_emotion_override_until_ms = millis() + 3000;
+      playCatPurrDocileSound();
+      servoGestures.queueGesture("curious_tilt");
+      g_behaviorManager.onEvent(BehaviorEvent::TOUCH, millis());
+    }
+  }
   M5StackChan.update();
 
   // Dynamic Serial Commands (e.g. GAIN=16, GAIN=8, GAIN=4)
@@ -899,6 +958,9 @@ void loop() {
       Serial.printf("[TEST:GESTURE] queued gesture=%s ok=%s active=%s anchorX=%d anchorY=%d\n",
                     gName.c_str(), ok ? "yes" : "no", servoGestures.active() ? "yes" : "no",
                     servoGestures.anchorX(), servoGestures.anchorY());
+    } else if (cmdLine == "CAL_REFRESH") {
+      Serial.println("[COMMAND] Triggering background calendar refresh on Core 0...");
+      liveFeeds.requestCalendarRefresh();
     }
   }
 
@@ -916,7 +978,9 @@ void loop() {
   if (M5.BtnPWR.wasClicked()) {
     g_physical_mute = !g_physical_mute;
     gemini.setPhysicalMute(g_physical_mute);
+    Serial.printf("[DIAG:PWR_BTN] wasClicked=1 mute=%d millis=%lu\n", (int)g_physical_mute, millis());
     if (g_physical_mute) {
+      Serial.printf("[DIAG:SLEEP] trigger=BtnPWR_mute millis=%lu\n", millis());
       gemini.stopConversation();
       gemini.setDoNotDisturb(1440); // 24-hour mute
       emotion.setPhysicalMute(true);
@@ -990,17 +1054,34 @@ void loop() {
   liveFeeds.setSystemIdle(systemIdle);
   liveFeeds.loop();
 
-  // E2.1 B: Opportunistic calendar prefetch when system is strictly idle
-  static uint32_t s_last_cal_idle_refresh_ms = 0;
-  uint32_t calRefreshInterval = (!googleCalendar.hasCache() || !googleCalendar.isCacheValidForToday()) ? 60000 : 1800000;
-  if (systemIdle && (now - s_last_cal_idle_refresh_ms >= calRefreshInterval)) {
-    if (ESP.getFreeHeap() >= 32000 && ESP.getMaxAllocHeap() >= 12000) {
-      s_last_cal_idle_refresh_ms = now;
-      Serial.printf("[GoogleCalendar] opportunistic idle refresh starting (freeHeap=%u maxAllocHeap=%u)...\n",
-                    static_cast<unsigned>(ESP.getFreeHeap()),
-                    static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      googleCalendar.prefetch(false);
+  // Safe trigger for LiveFeeds boot prefetch: only after Gemini setupComplete, or if Gemini not configured when system is idle
+  static bool s_boot_prefetch_triggered = false;
+  if (!s_boot_prefetch_triggered && isWifiConnected) {
+    bool geminiConfigured = configManager.config().geminiEnabled && configManager.hasGeminiApiKey();
+    bool canTrigger = false;
+    if (geminiConfigured) {
+      if (gemini.isReady()) {
+        canTrigger = true;
+      }
+    } else {
+      if (systemIdle) {
+        canTrigger = true;
+      }
     }
+    if (canTrigger) {
+      s_boot_prefetch_triggered = true;
+      Serial.println("[BOOT_PREFETCH] Triggering boot prefetch safely (Gemini ready or system idle)");
+      liveFeeds.triggerBootPrefetch();
+    }
+  }
+
+  // Opportunistic background calendar refresh trigger on Core 0 (zero TLS work on Core 1)
+  static uint32_t s_last_cal_idle_refresh_ms = 0;
+  bool calNeedsInitialFetch = (s_last_cal_idle_refresh_ms == 0 && (!googleCalendar.hasCache() || !googleCalendar.isCacheValidForToday()));
+  uint32_t calRefreshInterval = (!googleCalendar.hasCache() || !googleCalendar.isCacheValidForToday()) ? 60000 : 1800000;
+  if (systemIdle && (calNeedsInitialFetch || (now - s_last_cal_idle_refresh_ms >= calRefreshInterval))) {
+    s_last_cal_idle_refresh_ms = now;
+    liveFeeds.requestCalendarRefresh();
   }
 
   // Servos: mantem servoGestures.loop() ativo apenas se houver gesto ja em curso, sem novos gestos
@@ -1476,6 +1557,7 @@ void loop() {
         } else if (now - g_darkness_start_ms > 15000 && !g_night_mode) {
           g_night_mode = true;
           Serial.printf("LTR-553: Darkness confirmed (%u lux avg) -> night sleep mode\n", alsAvg);
+          Serial.printf("[DIAG:SLEEP] trigger=LTR553_darkness lux=%u millis=%lu\n", alsAvg, millis());
           emotion.setEmotion("sleep");
           M5StackChan.showRgbColor(0, 0, 0);
           M5.Display.setBrightness(0); // Blank LCD to keep bedroom dark
@@ -1514,6 +1596,13 @@ void loop() {
   uint8_t backTouch = touchIntensities[2];
   bool swiped = M5StackChan.TouchSensor.wasSwiped();
 
+  static uint32_t s_last_diag_touch_ms = 0;
+  if ((frontTouch > 0 || midTouch > 0 || backTouch > 0 || swiped) && (now - s_last_diag_touch_ms > 200)) {
+    s_last_diag_touch_ms = now;
+    Serial.printf("[DIAG:TOUCH_SI12T] physical front=%u mid=%u back=%u swiped=%d millis=%lu\n",
+                  frontTouch, midTouch, backTouch, (int)swiped, now);
+  }
+
   static uint32_t s_mid_touch_start_ms = 0;
   static bool s_is_prolonged_petting = false;
 
@@ -1547,6 +1636,9 @@ void loop() {
       uint32_t petDuration = now - s_mid_touch_start_ms;
       s_mid_touch_start_ms = 0;
       if (petDuration < 1800) {
+        Serial.printf("[DIAG:PET_DISPATCH] duration=%u emotion=%s mute=%d dnd=%d canBehaviorAct=%d millis=%lu\n",
+                      petDuration, emotion.currentEmotion().c_str(), (int)g_physical_mute,
+                      (int)gemini.isDoNotDisturb(), (int)canBehaviorAct(), now);
         Serial.printf("Touch: middle affectionate pet (duration=%u ms)\n", petDuration);
         if (emotion.currentEmotion() == "sleep" && !g_physical_mute && !gemini.isDoNotDisturb()) {
           unitPaHub.purr();
@@ -1638,6 +1730,12 @@ void loop() {
   };
 
   auto t = M5.Touch.getDetail();
+  static uint32_t s_last_diag_screen_touch_ms = 0;
+  if ((t.isPressed() || t.wasPressed() || t.wasReleased() || t.wasClicked()) && (now - s_last_diag_screen_touch_ms > 100)) {
+    s_last_diag_screen_touch_ms = now;
+    Serial.printf("[DIAG:TOUCH_SCREEN] isPressed=%d wasPressed=%d wasReleased=%d wasClicked=%d x=%d y=%d millis=%lu\n",
+                  (int)t.isPressed(), (int)t.wasPressed(), (int)t.wasReleased(), (int)t.wasClicked(), t.x, t.y, now);
+  }
   if (t.wasPressed() || (t.isPressed() && !s_screen_touching)) {
     s_screen_touching = true;
     s_touch_start_x = t.x;
@@ -1679,6 +1777,8 @@ void loop() {
     if (!s_drawer_triggered) {
       // Valid tap criteria: |dx| < 12 && |dy| < 12 && duration < 400 ms
       bool isValidTap = (totalDx < 12) && (abs(totalDy) < 12) && (touchDuration < 400);
+      Serial.printf("[DIAG:TOUCH_SCREEN_DISPATCH] isValidTap=%d totalDx=%d totalDy=%d duration=%lu drawer=%d millis=%lu\n",
+                    (int)isValidTap, totalDx, totalDy, touchDuration, (int)emotion.isQuickStatusActive(), now);
 
       if (isValidTap) {
         if (emotion.isQuickStatusActive()) {
@@ -1781,12 +1881,25 @@ void loop() {
     executeBehaviorDecision(dec, now);
   }
 
+  static uint32_t s_last_30s_diag_ms = 0;
+  if (now < 60000 && now - s_last_30s_diag_ms >= 1000) {
+    s_last_30s_diag_ms = now;
+    Serial.printf("[DIAG:STATE30S] t=%lu lastAct=%lu diff=%lu sysIdle=%d gemTurn=%d dnd=%d mute=%d lifted=%d ovr=%lu emo=%s liveInFlight=%d calInFlight=%d canAct=%d\n",
+                  now, g_last_human_activity_ms, now - g_last_human_activity_ms,
+                  (int)systemIdle, (int)gemini.turnState(), (int)gemini.isDoNotDisturb(),
+                  (int)g_physical_mute, (int)g_is_currently_lifted,
+                  (unsigned long)g_emotion_override_until_ms, emotion.currentEmotion().c_str(),
+                  (int)liveFeeds.isRequestInFlight(), (int)liveFeeds.isCalendarJobInFlight(),
+                  (int)canBehaviorAct());
+  }
+
   if (!gemini.isRecording() && !gemini.isSpeaking() && !gemini.continuousConversation() &&
       emotion.currentEmotion() != "sleep" &&
       g_emotion_override_until_ms == 0 &&
       g_last_human_activity_ms &&
       now - g_last_human_activity_ms > kIdleSleepMs) {
-    Serial.println("Status: idle timeout -> sleep");
+    Serial.printf("[DIAG:SLEEP] trigger=idle_timeout now=%lu last_activity=%lu diff=%lu kIdleSleepMs=%lu millis=%lu\n",
+                  now, g_last_human_activity_ms, now - g_last_human_activity_ms, kIdleSleepMs, millis());
     emotion.setEmotion("sleep");
     servoGestures.queueGesture("center_head");
   }

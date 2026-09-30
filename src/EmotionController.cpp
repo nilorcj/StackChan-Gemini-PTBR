@@ -349,6 +349,8 @@ bool EmotionController::setEmotion(const String& emotion) {
   Mode previous = mode_;
   mode_ = next;
   current_ = normalized;
+  Serial.printf("[DIAG:EMOTION] setEmotion='%s' mode=%d prev='%s' millis=%lu\n",
+                normalized.c_str(), static_cast<int>(mode_), (previous == Mode::Sleep ? "sleep" : "other"), millis());
   frame_ = 0;
   lastFrameMs_ = 0;
   lastFaceMs_ = 0;

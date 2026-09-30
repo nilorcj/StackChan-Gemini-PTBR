@@ -116,8 +116,11 @@ static String normalizeFactText(const String& text) {
   return out;
 }
 
-MemoryStore::SaveFactResult MemoryStore::saveFact(const String& fact, const String& key, const String& category) {
+MemoryStore::SaveFactResult MemoryStore::saveFact(const String& fact, const String& key, const String& category, uint8_t importance) {
   SaveFactResult res;
+  // Clamp importance to [1,3]
+  if (importance < 1) importance = 1;
+  if (importance > 3) importance = 3;
   if (!_ready) {
     res.ok = false;
     res.message = "MemoryStore not ready";
@@ -227,6 +230,7 @@ MemoryStore::SaveFactResult MemoryStore::saveFact(const String& fact, const Stri
   }
   line += "\"category\":\"" + jsonEscape(cleanCat) + "\",";
   line += "\"confidence\":1.00,";
+  line += "\"importance\":" + String(importance) + ",";
   line += "\"fact\":\"" + jsonEscape(cleanFact) + "\"";
   line += "}";
 
@@ -254,11 +258,12 @@ String MemoryStore::factsPreview(size_t maxChars) {
   File f = _fs.open(factsPath(), FILE_READ);
   if (!f) return "";
 
-  // Collect latest unique entry per key with recency tracking
+  // Collect latest unique entry per key with recency and importance tracking
   struct FactEntry {
     String key;
     String text;
     String category;
+    uint8_t importance;
     uint32_t order;
   };
   std::vector<FactEntry> entries;
@@ -278,6 +283,9 @@ String MemoryStore::factsPreview(size_t maxChars) {
     String candCat = String((const char*)(doc["category"] | ""));
     candCat.trim();
     candCat.toLowerCase();
+    uint8_t candImp = (uint8_t)(doc["importance"] | 2);
+    if (candImp < 1) candImp = 1;
+    if (candImp > 3) candImp = 3;
 
     if (candKey.length()) {
       bool found = false;
@@ -285,16 +293,17 @@ String MemoryStore::factsPreview(size_t maxChars) {
         if (it.key == candKey) {
           it.text = text;
           it.category = candCat;
+          it.importance = candImp;
           it.order = ++globalOrder;
           found = true;
           break;
         }
       }
       if (!found) {
-        entries.push_back({candKey, text, candCat, ++globalOrder});
+        entries.push_back({candKey, text, candCat, candImp, ++globalOrder});
       }
     } else {
-      entries.push_back({"", text, candCat, ++globalOrder});
+      entries.push_back({"", text, candCat, candImp, ++globalOrder});
     }
   }
   f.close();
@@ -304,7 +313,7 @@ String MemoryStore::factsPreview(size_t maxChars) {
   auto isCoreFact = [](const FactEntry& e) -> bool {
     const String& k = e.key;
     const String& c = e.category;
-    if (c == "identity" || c == "profile" || c == "core" || c == "creator") return true;
+    if (c == "identity" || c == "profile" || c == "work" || c == "relationship" || c == "core" || c == "creator") return true;
     if (k == "user_name" || k == "name" || k == "user" || k == "usuario") return true;
     if (k == "creator" || k == "creator_update" || k == "criador") return true;
     if (k.indexOf("work") >= 0 || k.indexOf("trabalho") >= 0 || k.indexOf("ppi") >= 0 || k.indexOf("job") >= 0) return true;
@@ -314,44 +323,147 @@ String MemoryStore::factsPreview(size_t maxChars) {
   };
 
   String out = "";
-  std::vector<bool> included(entries.size(), false);
-
-  // 1. Add core / essential facts first (user identity, creator, workplace, bot location)
+  std::vector<size_t> coreIndices;
+  std::vector<size_t> nonCoreIndices;
   for (size_t i = 0; i < entries.size(); ++i) {
     if (isCoreFact(entries[i])) {
-      String entry = "- " + entries[i].text;
-      if (entries[i].key.length()) entry += " (chave: " + entries[i].key + ")";
-      entry += "\n";
-      if (out.length() + entry.length() <= maxChars) {
-        out += entry;
-        included[i] = true;
-      }
-    }
-  }
-
-  // 2. Collect non-core facts sorted by recency (most recent / highest order first)
-  std::vector<size_t> nonCoreIndices;
-  nonCoreIndices.reserve(entries.size());
-  for (size_t i = 0; i < entries.size(); ++i) {
-    if (!included[i]) {
+      coreIndices.push_back(i);
+    } else {
       nonCoreIndices.push_back(i);
     }
   }
-  std::sort(nonCoreIndices.begin(), nonCoreIndices.end(), [&](size_t a, size_t b) {
+
+  // 1. Sort core facts: importance desc, then recency (order) desc
+  std::sort(coreIndices.begin(), coreIndices.end(), [&](size_t a, size_t b) {
+    if (entries[a].importance != entries[b].importance) {
+      return entries[a].importance > entries[b].importance;
+    }
     return entries[a].order > entries[b].order;
   });
 
-  // 3. Fill the remaining budget with the most recent non-core facts
+  // 2. Sort non-core facts: importance desc, then recency (order) desc
+  std::sort(nonCoreIndices.begin(), nonCoreIndices.end(), [&](size_t a, size_t b) {
+    if (entries[a].importance != entries[b].importance) {
+      return entries[a].importance > entries[b].importance;
+    }
+    return entries[a].order > entries[b].order;
+  });
+
+  // Add core facts first within maxChars budget
+  for (size_t idx : coreIndices) {
+    String entry = "- " + entries[idx].text;
+    if (entries[idx].key.length()) entry += " (chave: " + entries[idx].key + ")";
+    entry += "\n";
+    if (out.length() + entry.length() <= maxChars) {
+      out += entry;
+    }
+  }
+
+  // Add non-core facts next within remaining maxChars budget
   for (size_t idx : nonCoreIndices) {
     String entry = "- " + entries[idx].text;
     if (entries[idx].key.length()) entry += " (chave: " + entries[idx].key + ")";
     entry += "\n";
     if (out.length() + entry.length() <= maxChars) {
       out += entry;
-      included[idx] = true;
     }
   }
 
+  return out;
+}
+
+String MemoryStore::exportFactsJson(size_t maxItems) {
+  if (!_ready || !_fs.exists(factsPath())) {
+    return "{\"ok\":true,\"count\":0,\"total\":0,\"truncated\":false,\"facts\":[]}";
+  }
+  File f = _fs.open(factsPath(), FILE_READ);
+  if (!f) {
+    return "{\"ok\":false,\"error\":\"open_failed\",\"count\":0,\"total\":0,\"truncated\":false,\"facts\":[]}";
+  }
+
+  struct FactEntry {
+    String key;
+    String text;
+    String category;
+    uint8_t importance;
+    String ts;
+    uint32_t order;
+  };
+  std::vector<FactEntry> entries;
+  uint32_t globalOrder = 0;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    line.trim();
+    if (!line.length()) continue;
+    JsonDocument doc;
+    if (deserializeJson(doc, line) != DeserializationError::Ok) continue;
+    String text = String((const char*)(doc["fact"] | doc["text"] | ""));
+    if (!text.length()) continue;
+    String candKey = String((const char*)(doc["key"] | ""));
+    candKey.trim();
+    candKey.toLowerCase();
+    String candCat = String((const char*)(doc["category"] | "general"));
+    candCat.trim();
+    candCat.toLowerCase();
+    uint8_t candImp = (uint8_t)(doc["importance"] | 2);
+    if (candImp < 1) candImp = 1;
+    if (candImp > 3) candImp = 3;
+    String candTs = String((const char*)(doc["ts"] | doc["observed_start_ts"] | ""));
+
+    if (candKey.length()) {
+      bool found = false;
+      for (auto& it : entries) {
+        if (it.key == candKey) {
+          it.text = text;
+          it.category = candCat;
+          it.importance = candImp;
+          it.ts = candTs;
+          it.order = ++globalOrder;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        entries.push_back({candKey, text, candCat, candImp, candTs, ++globalOrder});
+      }
+    } else {
+      entries.push_back({"", text, candCat, candImp, candTs, ++globalOrder});
+    }
+  }
+  f.close();
+
+  size_t total = entries.size();
+  bool truncated = (total > maxItems);
+
+  // Sort by recency (highest order first)
+  std::sort(entries.begin(), entries.end(), [](const FactEntry& a, const FactEntry& b) {
+    return a.order > b.order;
+  });
+
+  size_t count = truncated ? maxItems : total;
+
+  String out;
+  out.reserve(count * 180 + 128);
+  out += "{\"ok\":true,\"count\":";
+  out += String(count);
+  out += ",\"total\":";
+  out += String(total);
+  out += ",\"truncated\":";
+  out += (truncated ? "true" : "false");
+  out += ",\"facts\":[";
+
+  for (size_t i = 0; i < count; ++i) {
+    if (i > 0) out += ",";
+    out += "{";
+    out += "\"key\":\"" + jsonEscape(entries[i].key) + "\",";
+    out += "\"category\":\"" + jsonEscape(entries[i].category) + "\",";
+    out += "\"importance\":" + String(entries[i].importance) + ",";
+    out += "\"text\":\"" + jsonEscape(entries[i].text) + "\",";
+    out += "\"ts\":\"" + jsonEscape(entries[i].ts) + "\"";
+    out += "}";
+  }
+  out += "]}";
   return out;
 }
 
@@ -732,8 +844,11 @@ String MemoryStore::searchMemory(const String& query, size_t maxResults, size_t 
         String observedDate;
         String sourceSession;
         String tags;
+        uint8_t importance = 2;
+        uint32_t order = 0;
       };
       std::vector<FactItem> items;
+      uint32_t globalFactOrder = 0;
 
       while (f.available()) {
         String line = f.readStringUntil('\n');
@@ -754,6 +869,10 @@ String MemoryStore::searchMemory(const String& query, size_t maxResults, size_t 
         if (doc["tags"].is<JsonArray>()) {
           for (JsonVariant t : doc["tags"].as<JsonArray>()) { tags += " "; tags += String((const char*)t); }
         }
+        uint8_t importance = (uint8_t)(doc["importance"] | 2);
+        if (importance < 1) importance = 1;
+        if (importance > 3) importance = 3;
+        ++globalFactOrder;
 
         if (candKey.length()) {
           bool found = false;
@@ -765,32 +884,70 @@ String MemoryStore::searchMemory(const String& query, size_t maxResults, size_t 
               it.observedDate = observedDate;
               it.sourceSession = sourceSession;
               it.tags = tags;
+              it.importance = importance;
+              it.order = globalFactOrder;
               found = true;
               break;
             }
           }
           if (!found) {
-            items.push_back({candKey, text, observed, observedEnd, observedDate, sourceSession, tags});
+            items.push_back({candKey, text, observed, observedEnd, observedDate, sourceSession, tags, importance, globalFactOrder});
           }
         } else {
-          items.push_back({"", text, observed, observedEnd, observedDate, sourceSession, tags});
+          items.push_back({"", text, observed, observedEnd, observedDate, sourceSession, tags, importance, globalFactOrder});
         }
       }
       f.close();
+
+      uint32_t maxFactOrder = globalFactOrder;
 
       for (const auto& it : items) {
         if (dateFilter.length() && it.observedDate != dateFilter) continue;
         String lower = it.text; lower.toLowerCase();
         String tagsLower = it.key + " " + it.tags; tagsLower.toLowerCase();
-        int score = scoreMemoryText(qLower, lower, tagsLower, it.observedDate);
-        if (score > 0 || !qLower.length() ||
-            (it.key == "user_name" && (qLower.indexOf("nome") >= 0 || qLower.indexOf("chamo") >= 0 || qLower.indexOf("quem") >= 0)) ||
-            (it.key == "creator" && (qLower.indexOf("criador") >= 0 || qLower.indexOf("quem") >= 0)) ||
-            (it.key.indexOf("work") >= 0 && (qLower.indexOf("trabalh") >= 0 || qLower.indexOf("emprego") >= 0 || qLower.indexOf("servi") >= 0 || qLower.indexOf("ppi") >= 0))) {
+        int lexicalScore = scoreMemoryText(qLower, lower, tagsLower, it.observedDate);
+
+        bool isNameIntent = (it.key == "user_name" || it.key == "name" || it.key == "usuario") &&
+                            (qLower.indexOf("nome") >= 0 || qLower.indexOf("chamo") >= 0 || qLower.indexOf("quem") >= 0);
+        bool isCreatorIntent = (it.key == "creator" || it.key == "criador") &&
+                               (qLower.indexOf("criador") >= 0 || qLower.indexOf("quem") >= 0);
+        bool isWorkIntent = (it.key.indexOf("work") >= 0 || it.key.indexOf("trabalh") >= 0 || it.key.indexOf("ppi") >= 0) &&
+                            (qLower.indexOf("trabalh") >= 0 || qLower.indexOf("emprego") >= 0 || qLower.indexOf("servi") >= 0 || qLower.indexOf("ppi") >= 0);
+        bool isTravelIntent = (it.tags.indexOf("travel") >= 0 || it.tags.indexOf("viag") >= 0 || it.key.indexOf("travel") >= 0 || it.key.indexOf("viag") >= 0) &&
+                              (qLower.indexOf("viag") >= 0 || qLower.indexOf("viaj") >= 0 || qLower.indexOf("chile") >= 0 || qLower.indexOf("puerto") >= 0);
+
+        bool matches = (lexicalScore > 0) || !qLower.length() || isNameIntent || isCreatorIntent || isWorkIntent || isTravelIntent;
+
+        if (matches) {
+          int score = lexicalScore;
           if (score <= 0) score = 6;
+
+          // Intent boost
+          if (isNameIntent) score += 4;
+          if (isCreatorIntent) score += 4;
+          if (isWorkIntent) score += 4;
+          if (isTravelIntent) score += 4;
+
+          // Core category boost (identity, profile, work, relationship)
+          bool isCore = (it.tags == "identity" || it.tags == "profile" || it.tags == "work" || it.tags == "relationship" ||
+                         it.key == "user_name" || it.key == "creator" || it.key.indexOf("work") >= 0);
+          if (isCore) score += 2;
+
+          // Importance boost (1 = -2, 2 = 0, 3 = +2)
+          if (it.importance == 3) score += 2;
+          else if (it.importance == 1) score -= 2;
+
+          // Recency boost (0 to +2)
+          int recencyBoost = (maxFactOrder > 0) ? (int)round(2.0f * (float)it.order / (float)maxFactOrder) : 0;
+          score += recencyBoost;
+
+          // Base fact layer offset
           score += 4;
+          if (score < 1) score = 1;
+
           String j = "{\"layer\":\"fact\",\"score\":" + String(score) +
                      ",\"key\":\"" + jsonEscape(it.key) + "\"" +
+                     ",\"importance\":" + String(it.importance) +
                      ",\"observed_start_ts\":\"" + jsonEscape(it.observed) + "\"" +
                      ",\"observed_end_ts\":\"" + jsonEscape(it.observedEnd) + "\"" +
                      ",\"source_session\":\"" + jsonEscape(it.sourceSession) + "\"" +

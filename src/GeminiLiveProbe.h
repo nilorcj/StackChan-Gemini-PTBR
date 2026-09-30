@@ -50,6 +50,11 @@ class GeminiLiveProbe {
   void streamAudioDeltaBase64(const String& b64) { streamAudioDeltaBase64(b64.c_str(), b64.length()); }
   bool isReady() const { return connected_ && setup_complete_; }
   bool isConnected() const { return connected_; }
+  bool isSetupComplete() const { return setup_complete_; }
+  bool isConnectRequested() const { return connect_requested_; }
+  bool isConnectingOrHandshaking() const {
+    return reconnect_requested_ || (connect_requested_ && (!connected_ || !setup_complete_));
+  }
   bool isRecording() const { return realtime_recording_; }
   bool isSpeaking() const { return speaking_ || audio_buffered_bytes_ > 0 || (M5.Speaker.isRunning() && M5.Speaker.isPlaying(1)); }
   bool streamAborted() const { return stream_aborted_; }

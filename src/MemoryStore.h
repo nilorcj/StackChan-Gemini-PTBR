@@ -32,8 +32,10 @@ class MemoryStore {
   bool appendEvent(const char* role, const String& text, const char* type = "utterance");
   bool appendDialogue(const char* role, const String& text, const char* source = "live_transcription");
   bool appendFact(const String& fact, const char* source = "assistant", float confidence = 0.7f);
-  SaveFactResult saveFact(const String& fact, const String& key = "", const String& category = "general");
+  // importance: 1=baixa, 2=normal, 3=alta. Default 2. Clamped to [1,3].
+  SaveFactResult saveFact(const String& fact, const String& key = "", const String& category = "general", uint8_t importance = 2);
   String factsPreview(size_t maxChars = 2000);
+  String exportFactsJson(size_t maxItems = 100);
   bool appendSummary(const String& summary, const char* scope = "session");
   bool rememberPrivateMemory(const String& kind, const String& label, const String& value);
   bool recallPrivateMemory(const String& query, String& kind, String& label, String& value, String& ts);

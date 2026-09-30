@@ -95,7 +95,11 @@ String GeminiToolBridge::functionDeclarationsJson() {
   rfProps["key"]["type"] = "string";
   rfProps["key"]["description"] = "Identificador ou tópico curto para permitir atualização futura (ex: 'user_name', 'creator', 'user_preference').";
   rfProps["category"]["type"] = "string";
-  rfProps["category"]["description"] = "Categoria: identity, preference, creator, environment ou general.";
+  rfProps["category"]["description"] = "Categoria: identity, profile, work, relationship, preference, travel, project, plan, temporary, other ou general.";
+  rfProps["importance"]["type"] = "integer";
+  rfProps["importance"]["description"] = "Nivel de importancia: 1=baixa (temporario/detalhe menor), 2=normal (padrao), 3=alta (essencial/identidade/trabalho/perfil).";
+  rfProps["importance"]["minimum"] = 1;
+  rfProps["importance"]["maximum"] = 3;
   rfParams["required"].add("fact");
 
   auto rememberPrivate = arr.add<JsonObject>();
@@ -520,6 +524,7 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
     String fact = String((const char*)(args["fact"] | ""));
     String key = String((const char*)(args["key"] | ""));
     String category = String((const char*)(args["category"] | "general"));
+    uint8_t importance = (uint8_t)(args["importance"] | 2);
 
     // Check sensitive terms
     String fLower = fact;
@@ -533,11 +538,12 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
       return LocalStatus::Handled;
     }
 
-    auto res = memory_->saveFact(fact, key, category);
+    auto res = memory_->saveFact(fact, key, category, importance);
     response["ok"] = res.ok;
     response["stored"] = res.ok;
     response["already_known"] = res.alreadyKnown;
     response["updated"] = res.updated;
+    response["importance"] = importance;
     if (res.key.length()) response["key"] = res.key;
     response["fact"] = res.fact;
     response["message"] = res.message;

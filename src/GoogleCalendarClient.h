@@ -7,6 +7,10 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <esp_sntp.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <atomic>
+#include <functional>
 #include <vector>
 #include <algorithm>
 #include "ConfigManager.h"
@@ -24,104 +28,155 @@ class GoogleCalendarClient {
     int dayOffset = 0;    // 0 = hoje, 1 = amanha, 2 = depois de amanha
   };
 
-  explicit GoogleCalendarClient(ConfigManager& config) : config_(config) {}
+  explicit GoogleCalendarClient(ConfigManager& config) : config_(config) {
+    calMutex_ = xSemaphoreCreateMutex();
+  }
+
+  ~GoogleCalendarClient() {
+    if (calMutex_) {
+      vSemaphoreDelete(calMutex_);
+      calMutex_ = nullptr;
+    }
+  }
+
+  // Must be called on Core 1 (setup or config reload) to safely cache URL and timezone in RAM
+  void refreshCachedUrl() {
+    String url = config_.readCalendarUrl();
+    url.trim();
+    int tz = config_.config().timezoneOffset;
+    if (calMutex_ && xSemaphoreTake(calMutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+      cachedUrl_ = url;
+      cachedTimezoneOffset_ = tz;
+      xSemaphoreGive(calMutex_);
+    }
+  }
+
+  bool hasCache() const { return hasCache_.load(std::memory_order_acquire); }
+  bool isInFlight() const { return inFlight_.load(std::memory_order_acquire); }
+  bool isRefreshRequested() const { return refreshRequested_.load(std::memory_order_acquire); }
+  void requestRefresh() { refreshRequested_.store(true, std::memory_order_release); }
 
   bool isCacheValidForToday() const {
-    if (!hasCache_) return false;
+    if (!hasCache_.load(std::memory_order_acquire)) return false;
     time_t nowSec = time(nullptr);
     struct tm nowTm {};
     localtime_r(&nowSec, &nowTm);
     char todayStr[16];
     snprintf(todayStr, sizeof(todayStr), "%04d%02d%02d",
              nowTm.tm_year + 1900, nowTm.tm_mon + 1, nowTm.tm_mday);
-    return (lastPrefetchDateStr_ == todayStr);
+    bool valid = false;
+    if (calMutex_ && xSemaphoreTake(calMutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
+      valid = (lastPrefetchDateStr_ == todayStr);
+      xSemaphoreGive(calMutex_);
+    }
+    return valid;
   }
 
+  size_t cachedEventCount() const {
+    size_t count = 0;
+    if (calMutex_ && xSemaphoreTake(calMutex_, pdMS_TO_TICKS(20)) == pdTRUE) {
+      count = cachedEvents_.size();
+      xSemaphoreGive(calMutex_);
+    }
+    return count;
+  }
+
+  // Non-blocking prefetch on Core 1: requests background refresh on Core 0
   bool prefetch(bool force = false) {
-    uint32_t now = millis();
-    if (hasCache_ && !isCacheValidForToday()) {
-      Serial.printf("[GoogleCalendar] cache date (%s) != today -> forcing refresh\n",
-                    lastPrefetchDateStr_.c_str());
-      force = true;
+    (void)force;
+    requestRefresh();
+    return hasCache_.load(std::memory_order_acquire);
+  }
+
+  // Core 0 background fetch execution (zero SD access, zero blocking of Core 1)
+  bool executeFetch(const std::function<bool()>& preflightGate = nullptr) {
+    if (inFlight_.load(std::memory_order_acquire)) {
+      Serial.println("[GoogleCalendar] fetch aborted: already in flight");
+      return false;
     }
-    if (!force && hasCache_ && (now - lastFetchMs_ < 1800000)) {
-      return true; // Cache valid for 30 minutes on same date
-    }
+
+    struct InFlightGuard {
+      std::atomic<bool>& flag;
+      explicit InFlightGuard(std::atomic<bool>& f) : flag(f) {
+        flag.store(true, std::memory_order_release);
+      }
+      ~InFlightGuard() {
+        flag.store(false, std::memory_order_release);
+      }
+    } guard(inFlight_);
 
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[GoogleCalendar] prefetch aborted: Wi-Fi not connected");
+      Serial.println("[GoogleCalendar] fetch aborted: Wi-Fi not connected");
       return false;
     }
 
-    String url = config_.readCalendarUrl();
-    url.trim();
+    String url;
+    int tzOffset = -3;
+    if (calMutex_ && xSemaphoreTake(calMutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+      url = cachedUrl_;
+      tzOffset = cachedTimezoneOffset_;
+      xSemaphoreGive(calMutex_);
+    } else {
+      Serial.println("[GoogleCalendar] fetch aborted: could not acquire calMutex_");
+      return false;
+    }
+
     if (!url.length()) {
-      Serial.println("[GoogleCalendar] prefetch aborted: calendar URL missing");
+      Serial.println("[GoogleCalendar] fetch aborted: calendar URL missing");
       return false;
     }
 
-    if (ESP.getFreeHeap() < 24000 || ESP.getMaxAllocHeap() < 12000) {
-      Serial.printf("[GoogleCalendar] prefetch deferred: freeHeap=%u maxAllocHeap=%u\n",
-                    static_cast<unsigned>(ESP.getFreeHeap()),
-                    static_cast<unsigned>(ESP.getMaxAllocHeap()));
-      return false;
-    }
-
-    // Ensure NTP has synchronized so we do not evaluate dates with an un-synced clock
-    if (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
-      for (int i = 0; i < 20 && sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED; ++i) {
-        delay(100);
-      }
-    }
-
-    // Determine current local date/time
     time_t nowSec = time(nullptr);
     struct tm nowTm {};
     localtime_r(&nowSec, &nowTm);
-
     int curYear = nowTm.tm_year + 1900;
     if (curYear < 2024) {
-      for (int i = 0; i < 10 && curYear < 2024; ++i) {
-        delay(150);
-        nowSec = time(nullptr);
-        localtime_r(&nowSec, &nowTm);
-        curYear = nowTm.tm_year + 1900;
-      }
+      Serial.printf("[GoogleCalendar] fetch postponed: clock year (%d) < 2024\n", curYear);
+      return false;
     }
+
+    // Preflight gate check
+    if (preflightGate && !preflightGate()) {
+      Serial.println("[GoogleCalendar] fetch aborted: preflight gate closed");
+      return false;
+    }
+
+    // Strict heap check before TLS allocation
+    size_t freeHeap = ESP.getFreeHeap();
+    size_t maxAlloc = ESP.getMaxAllocHeap();
+    if (freeHeap < 50000 || maxAlloc < 20000) {
+      Serial.printf("[GoogleCalendar] fetch deferred: freeHeap=%u maxAlloc=%u (< 50000/20000)\n",
+                    static_cast<unsigned>(freeHeap), static_cast<unsigned>(maxAlloc));
+      return false;
+    }
+
     int curMonth = nowTm.tm_mon + 1;
     int curDay = nowTm.tm_mday;
-
     char todayStr[16];
     snprintf(todayStr, sizeof(todayStr), "%04d%02d%02d", curYear, curMonth, curDay);
 
     char readableDate[32];
     snprintf(readableDate, sizeof(readableDate), "%02d/%02d/%04d", curDay, curMonth, curYear);
 
-    // Tomorrow calculation (+1 day)
     time_t tomorrowSec = nowSec + 86400;
     struct tm tomorrowTm {};
     localtime_r(&tomorrowSec, &tomorrowTm);
     int tomYear = tomorrowTm.tm_year + 1900;
     int tomMonth = tomorrowTm.tm_mon + 1;
     int tomDay = tomorrowTm.tm_mday;
-
     char tomorrowStr[16];
     snprintf(tomorrowStr, sizeof(tomorrowStr), "%04d%02d%02d", tomYear, tomMonth, tomDay);
-
     char readableTomorrow[32];
     snprintf(readableTomorrow, sizeof(readableTomorrow), "%02d/%02d/%04d", tomDay, tomMonth, tomYear);
 
-    // Day after tomorrow calculation (+2 days, buffer for midnight rollover)
     time_t dayAfterSec = nowSec + 172800;
     struct tm dayAfterTm {};
     localtime_r(&dayAfterSec, &dayAfterTm);
     int dayAfterYear = dayAfterTm.tm_year + 1900;
     int dayAfterMonth = dayAfterTm.tm_mon + 1;
     int dayAfterDay = dayAfterTm.tm_mday;
-
     char dayAfterStr[16];
     snprintf(dayAfterStr, sizeof(dayAfterStr), "%04d%02d%02d", dayAfterYear, dayAfterMonth, dayAfterDay);
-
     char readableDayAfter[32];
     snprintf(readableDayAfter, sizeof(readableDayAfter), "%02d/%02d/%04d", dayAfterDay, dayAfterMonth, dayAfterYear);
 
@@ -130,14 +185,26 @@ class GoogleCalendarClient {
     const char* tomorrowCode = kDayCodes[tomorrowTm.tm_wday >= 0 && tomorrowTm.tm_wday < 7 ? tomorrowTm.tm_wday : 0];
     const char* dayAfterCode = kDayCodes[dayAfterTm.tm_wday >= 0 && dayAfterTm.tm_wday < 7 ? dayAfterTm.tm_wday : 0];
 
-    Serial.printf("[GoogleCalendar] fetching agenda for %s (hoje), %s (amanha), %s (+2d)\n",
-                  readableDate, readableTomorrow, readableDayAfter);
+    Serial.printf("[GoogleCalendar] background fetch on Core %d: freeHeap=%u maxAlloc=%u\n",
+                  xPortGetCoreID(),
+                  static_cast<unsigned>(ESP.getFreeHeap()),
+                  static_cast<unsigned>(ESP.getMaxAllocHeap()));
 
     WiFiClientSecure client;
     client.setInsecure();
+    client.setTimeout(10000);
     HTTPClient http;
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    http.setTimeout(12000);
+    http.setTimeout(10000);
+
+    // Recheck gate immediately before http.begin()
+    if (preflightGate && !preflightGate()) {
+      Serial.println("[GoogleCalendar] fetch aborted right before http.begin");
+      return false;
+    }
+
+    Serial.printf("[GoogleCalendar] http.begin with url_len=%u (prefix: %.35s)\n",
+                  static_cast<unsigned>(url.length()), url.c_str());
 
     if (!http.begin(client, url)) {
       Serial.println("[GoogleCalendar] HTTPS begin failed");
@@ -148,50 +215,141 @@ class GoogleCalendarClient {
     http.addHeader("Accept", "text/calendar, text/plain, */*");
     http.addHeader("Accept-Encoding", "identity");
 
-    int httpCode = http.GET();
-    if (httpCode != HTTP_CODE_OK) {
-      Serial.printf("[GoogleCalendar] HTTP GET failed code=%d\n", httpCode);
+    // Recheck gate immediately before http.GET()
+    if (preflightGate && !preflightGate()) {
+      Serial.println("[GoogleCalendar] fetch aborted right before http.GET");
       http.end();
       return false;
     }
 
-    String transfer = http.header("Transfer-Encoding");
-    String encoding = http.header("Content-Encoding");
-    Serial.printf("[GoogleCalendar] HTTP 200 OK transfer=%s encoding=%s len=%d\n",
-                  transfer.c_str(), encoding.c_str(), http.getSize());
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+      char errBuf[128] = {0};
+      client.lastError(errBuf, sizeof(errBuf));
+      Serial.printf("[GoogleCalendar] HTTP GET failed code=%d (%s) clientErr='%s'\n",
+                    httpCode, http.errorToString(httpCode).c_str(), errBuf);
+      http.end();
+      return false;
+    }
 
     std::vector<CalendarEvent> parsedEvents;
+    parsedEvents.reserve(16);
     WiFiClient* stream = http.getStreamPtr();
 
-    bool inEvent = false;
-    String curSummary = "";
-    String curStartRaw = "";
-    String curEndRaw = "";
-    String curLoc = "";
-    String curRrule = "";
-    bool isAllDay = false;
+    enum class PropType { None, Summary, Location, DtStart, DtEnd, Rrule, Ignored };
+    PropType curProp = PropType::None;
 
-    uint32_t lastDataMs = millis();
+    bool inEvent = false;
+    char curSummary[256]; curSummary[0] = '\0';
+    char curLoc[128]; curLoc[0] = '\0';
+    char curStartRaw[32]; curStartRaw[0] = '\0';
+    char curEndRaw[32]; curEndRaw[0] = '\0';
+    char curRrule[256]; curRrule[0] = '\0';
+    bool isAllDay = false;
+    bool sawEndVCalendar = false;
+
+    uint32_t fetchStartMs = millis();
+    uint32_t lastDataMs = fetchStartMs;
     size_t lineCount = 0;
     size_t totalBytes = 0;
     size_t veventCount = 0;
-    String prevLine = "";
+    bool abortRequested = false;
+
+    struct ParsedRrule {
+      bool hasRrule = false;
+      enum Freq { None, Daily, Weekly, Monthly, Yearly } freq = None;
+      char untilDateStr[16] = {0};
+      bool hasUntil = false;
+      char maxDateStr[16] = {0};
+      bool hasCountLimit = false;
+      char byday[32] = {0};
+      bool hasByday = false;
+    };
+
+    auto parseRruleOnce = [&](const char* rruleStr, int evYear, int evMonth, int evDay) -> ParsedRrule {
+      ParsedRrule pr;
+      if (!rruleStr || rruleStr[0] == '\0') return pr;
+      pr.hasRrule = true;
+
+      if (strstr(rruleStr, "FREQ=DAILY")) pr.freq = ParsedRrule::Daily;
+      else if (strstr(rruleStr, "FREQ=WEEKLY")) pr.freq = ParsedRrule::Weekly;
+      else if (strstr(rruleStr, "FREQ=MONTHLY")) pr.freq = ParsedRrule::Monthly;
+      else if (strstr(rruleStr, "FREQ=YEARLY")) pr.freq = ParsedRrule::Yearly;
+
+      const char* uPtr = strstr(rruleStr, "UNTIL=");
+      if (uPtr) {
+        char uVal[32] = {0};
+        const char* valStart = uPtr + 6;
+        size_t vi = 0;
+        while (valStart[vi] != '\0' && valStart[vi] != ';' && vi + 1 < sizeof(uVal)) {
+          uVal[vi] = valStart[vi];
+          vi++;
+        }
+        uVal[vi] = '\0';
+        int uY = 0, uM = 0, uD = 0, uH = 0, uMin = 0;
+        bool uUtc = false, uAll = false;
+        parseIcalDateTime(uVal, uY, uM, uD, uH, uMin, uUtc, uAll);
+        snprintf(pr.untilDateStr, sizeof(pr.untilDateStr), "%04d%02d%02d", uY, uM, uD);
+        pr.hasUntil = true;
+      }
+
+      const char* cPtr = strstr(rruleStr, "COUNT=");
+      if (cPtr) {
+        int countN = atoi(cPtr + 6);
+        if (countN > 0) {
+          int maxDays = countN;
+          if (pr.freq == ParsedRrule::Weekly) maxDays = countN * 7;
+          else if (pr.freq == ParsedRrule::Monthly) maxDays = countN * 31;
+          else if (pr.freq == ParsedRrule::Yearly) maxDays = countN * 366;
+
+          const char* intPtr = strstr(rruleStr, "INTERVAL=");
+          if (intPtr) {
+            int intervalN = atoi(intPtr + 9);
+            if (intervalN > 1) maxDays *= intervalN;
+          }
+
+          struct tm et = {};
+          et.tm_year = evYear - 1900;
+          et.tm_mon = evMonth - 1;
+          et.tm_mday = evDay + maxDays;
+          et.tm_hour = 12;
+          et.tm_isdst = -1;
+          mktime(&et);
+          snprintf(pr.maxDateStr, sizeof(pr.maxDateStr), "%04d%02d%02d",
+                   et.tm_year + 1900, et.tm_mon + 1, et.tm_mday);
+          pr.hasCountLimit = true;
+        }
+      }
+
+      const char* bPtr = strstr(rruleStr, "BYDAY=");
+      if (bPtr) {
+        const char* valStart = bPtr + 6;
+        size_t vi = 0;
+        while (valStart[vi] != '\0' && valStart[vi] != ';' && vi + 1 < sizeof(pr.byday)) {
+          pr.byday[vi] = valStart[vi];
+          vi++;
+        }
+        pr.byday[vi] = '\0';
+        pr.hasByday = true;
+      }
+
+      return pr;
+    };
 
     auto evaluateEvent = [&]() {
-      if (!inEvent || !curSummary.length() || !curStartRaw.length()) return;
+      if (!inEvent || curSummary[0] == '\0' || curStartRaw[0] == '\0') return;
       veventCount++;
 
       int evYear = 0, evMonth = 0, evDay = 0, evHour = 0, evMin = 0;
       bool isUtc = false;
       parseIcalDateTime(curStartRaw, evYear, evMonth, evDay, evHour, evMin, isUtc, isAllDay);
 
-      // If time was UTC (ending with Z), convert to local time using tm normalization
       if (isUtc && !isAllDay) {
         struct tm t = {};
         t.tm_year = evYear - 1900;
         t.tm_mon = evMonth - 1;
         t.tm_mday = evDay;
-        t.tm_hour = evHour + config_.config().timezoneOffset;
+        t.tm_hour = evHour + tzOffset;
         t.tm_min = evMin;
         t.tm_sec = 0;
         t.tm_isdst = -1;
@@ -206,11 +364,19 @@ class GoogleCalendarClient {
       char evDateStr[16];
       snprintf(evDateStr, sizeof(evDateStr), "%04d%02d%02d", evYear, evMonth, evDay);
 
+      struct tm st = {};
+      st.tm_year = evYear - 1900;
+      st.tm_mon = evMonth - 1;
+      st.tm_mday = evDay;
+      st.tm_hour = 12;
+      st.tm_isdst = -1;
+      mktime(&st);
+      int evOrigWday = st.tm_wday;
+
       char evEndDateStr[16] = {0};
-      int endH = 0, endMin = 0;
-      String endTimeFormatted = "";
-      if (curEndRaw.length()) {
-        int endY = 0, endM = 0, endD = 0;
+      char endTimeFormatted[16] = {0};
+      if (curEndRaw[0] != '\0') {
+        int endY = 0, endM = 0, endD = 0, endH = 0, endMin = 0;
         bool endUtc = false, endAll = false;
         parseIcalDateTime(curEndRaw, endY, endM, endD, endH, endMin, endUtc, endAll);
         if (endUtc && !endAll) {
@@ -218,7 +384,7 @@ class GoogleCalendarClient {
           et.tm_year = endY - 1900;
           et.tm_mon = endM - 1;
           et.tm_mday = endD;
-          et.tm_hour = endH + config_.config().timezoneOffset;
+          et.tm_hour = endH + tzOffset;
           et.tm_min = endMin;
           et.tm_sec = 0;
           et.tm_isdst = -1;
@@ -230,94 +396,36 @@ class GoogleCalendarClient {
           endMin = et.tm_min;
         }
         snprintf(evEndDateStr, sizeof(evEndDateStr), "%04d%02d%02d", endY, endM, endD);
-        char eBuf[16];
-        snprintf(eBuf, sizeof(eBuf), "%02d:%02d", endH, endMin);
-        endTimeFormatted = String(eBuf);
+        snprintf(endTimeFormatted, sizeof(endTimeFormatted), "%02d:%02d", endH, endMin);
       }
 
-      // Check match for a given target date
+      // Analisar RRULE uma única vez por VEVENT
+      ParsedRrule pr = parseRruleOnce(curRrule, evYear, evMonth, evDay);
+
       auto matchesTargetDate = [&](int targetOffset, const char* targetDateStr, int targetWday, const char* targetDayCode) -> bool {
-        // Direct exact date match
         if (strcmp(evDateStr, targetDateStr) == 0) return true;
 
-        // Multi-day event spanning target date
         if (evEndDateStr[0] != 0 && isAllDay) {
           if (strcmp(targetDateStr, evDateStr) >= 0 && strcmp(targetDateStr, evEndDateStr) < 0) {
             return true;
           }
         }
 
-        // Recurrence rule (RRULE)
-        if (curRrule.length() > 0 && strcmp(targetDateStr, evDateStr) >= 0) {
-          // Check UNTIL=
-          int untilIdx = curRrule.indexOf("UNTIL=");
-          if (untilIdx >= 0) {
-            String uVal = curRrule.substring(untilIdx + 6);
-            int semi = uVal.indexOf(';');
-            if (semi >= 0) uVal = uVal.substring(0, semi);
-            int uY = 0, uM = 0, uD = 0, uH = 0, uMin = 0;
-            bool uUtc = false, uAll = false;
-            parseIcalDateTime(uVal, uY, uM, uD, uH, uMin, uUtc, uAll);
-            char uDateStr[16];
-            snprintf(uDateStr, sizeof(uDateStr), "%04d%02d%02d", uY, uM, uD);
-            if (strcmp(targetDateStr, uDateStr) > 0) return false; // Expired
-          }
+        if (pr.hasRrule && strcmp(targetDateStr, evDateStr) >= 0) {
+          if (pr.hasUntil && strcmp(targetDateStr, pr.untilDateStr) > 0) return false;
+          if (pr.hasCountLimit && strcmp(targetDateStr, pr.maxDateStr) > 0) return false;
 
-          // Check COUNT=
-          int countIdx = curRrule.indexOf("COUNT=");
-          if (countIdx >= 0) {
-            String countVal = curRrule.substring(countIdx + 6);
-            int semi = countVal.indexOf(';');
-            if (semi >= 0) countVal = countVal.substring(0, semi);
-            int countN = countVal.toInt();
-            if (countN > 0) {
-              int maxDays = countN;
-              if (curRrule.indexOf("FREQ=WEEKLY") >= 0) maxDays = countN * 7;
-              else if (curRrule.indexOf("FREQ=MONTHLY") >= 0) maxDays = countN * 31;
-              else if (curRrule.indexOf("FREQ=YEARLY") >= 0) maxDays = countN * 366;
-              int intIdx = curRrule.indexOf("INTERVAL=");
-              if (intIdx >= 0) {
-                String intVal = curRrule.substring(intIdx + 9);
-                int semiI = intVal.indexOf(';');
-                if (semiI >= 0) intVal = intVal.substring(0, semiI);
-                int intervalN = intVal.toInt();
-                if (intervalN > 1) maxDays *= intervalN;
-              }
-              struct tm et = {};
-              et.tm_year = evYear - 1900;
-              et.tm_mon = evMonth - 1;
-              et.tm_mday = evDay + maxDays;
-              et.tm_hour = 12;
-              et.tm_isdst = -1;
-              mktime(&et);
-              char maxDateStr[16];
-              snprintf(maxDateStr, sizeof(maxDateStr), "%04d%02d%02d", et.tm_year + 1900, et.tm_mon + 1, et.tm_mday);
-              if (strcmp(targetDateStr, maxDateStr) > 0) return false; // Expired
-            }
-          }
-
-          if (curRrule.indexOf("FREQ=DAILY") >= 0) {
+          if (pr.freq == ParsedRrule::Daily) {
             return true;
           }
-          if (curRrule.indexOf("FREQ=WEEKLY") >= 0) {
-            int bydayIdx = curRrule.indexOf("BYDAY=");
-            if (bydayIdx >= 0) {
-              String bydayStr = curRrule.substring(bydayIdx + 6);
-              int semi = bydayStr.indexOf(';');
-              if (semi >= 0) bydayStr = bydayStr.substring(0, semi);
-              if (bydayStr.indexOf(targetDayCode) >= 0) return true;
+          if (pr.freq == ParsedRrule::Weekly) {
+            if (pr.hasByday) {
+              if (strstr(pr.byday, targetDayCode) != nullptr) return true;
             } else {
-              struct tm st = {};
-              st.tm_year = evYear - 1900;
-              st.tm_mon = evMonth - 1;
-              st.tm_mday = evDay;
-              st.tm_hour = 12;
-              st.tm_isdst = -1;
-              mktime(&st);
-              if (st.tm_wday == targetWday) return true;
+              if (evOrigWday == targetWday) return true;
             }
           }
-          if (curRrule.indexOf("FREQ=YEARLY") >= 0) {
+          if (pr.freq == ParsedRrule::Yearly) {
             int tMonth = (targetOffset == 0 ? curMonth : (targetOffset == 1 ? tomMonth : dayAfterMonth));
             int tDay = (targetOffset == 0 ? curDay : (targetOffset == 1 ? tomDay : dayAfterDay));
             return (tMonth == evMonth && tDay == evDay);
@@ -332,14 +440,18 @@ class GoogleCalendarClient {
 
       if (matchesToday || matchesTom || matchesDayAfter) {
         Serial.printf("[GoogleCalendar:EVENT] '%s' raw=%s local=%04d%02d%02d %02d:%02d rrule=%s d0=%d d1=%d d2=%d\n",
-                      curSummary.c_str(), curStartRaw.c_str(), evYear, evMonth, evDay, evHour, evMin,
-                      curRrule.c_str(), matchesToday ? 1 : 0, matchesTom ? 1 : 0, matchesDayAfter ? 1 : 0);
+                      curSummary, curStartRaw, evYear, evMonth, evDay, evHour, evMin,
+                      curRrule, matchesToday ? 1 : 0, matchesTom ? 1 : 0, matchesDayAfter ? 1 : 0);
       }
 
-      auto addEventForDay = [&](int offset, const String& dStr) {
+      auto addEventForDay = [&](int offset, const char* dStr) {
+        if (parsedEvents.size() >= 32) return; // Hard cap on vector size
         CalendarEvent ev;
-        ev.title = cleanIcalText(curSummary);
-        ev.location = cleanIcalText(curLoc);
+        char cleaned[128];
+        cleanIcalText(curSummary, cleaned, sizeof(cleaned));
+        ev.title = cleaned;
+        cleanIcalText(curLoc, cleaned, sizeof(cleaned));
+        ev.location = cleaned;
         ev.isAllDay = isAllDay;
         ev.dayOffset = offset;
         ev.dateStr = dStr;
@@ -350,94 +462,220 @@ class GoogleCalendarClient {
         } else {
           char sBuf[16];
           snprintf(sBuf, sizeof(sBuf), "%02d:%02d", evHour, evMin);
-          ev.startTimeStr = String(sBuf);
+          ev.startTimeStr = sBuf;
           ev.startMinutes = evHour * 60 + evMin;
           ev.endTimeStr = endTimeFormatted;
         }
-        parsedEvents.push_back(ev);
+        parsedEvents.push_back(std::move(ev));
       };
 
       if (matchesToday) {
-        addEventForDay(0, String(readableDate));
+        addEventForDay(0, readableDate);
       }
       if (matchesTom) {
-        addEventForDay(1, String(readableTomorrow));
+        addEventForDay(1, readableTomorrow);
       }
       if (matchesDayAfter) {
-        addEventForDay(2, String(readableDayAfter));
+        addEventForDay(2, readableDayAfter);
       }
     };
 
-    auto handleIcalLine = [&](String line) {
-      line.trim();
-      if (!line.length()) return;
+    auto handleCompletedLine = [&](char* line, size_t len) {
+      if (len == 0) return;
 
-      if (line.startsWith("BEGIN:VEVENT")) {
+      // RFC 5545 unfolding: if starts with space or tab
+      if (line[0] == ' ' || line[0] == '\t') {
+        const char* cont = line + 1;
+        size_t contLen = len - 1;
+        if (curProp == PropType::Summary) {
+          size_t curLen = strlen(curSummary);
+          if (curLen + contLen < sizeof(curSummary) - 1) {
+            memcpy(curSummary + curLen, cont, contLen);
+            curSummary[curLen + contLen] = '\0';
+          }
+        } else if (curProp == PropType::Location) {
+          size_t curLen = strlen(curLoc);
+          if (curLen + contLen < sizeof(curLoc) - 1) {
+            memcpy(curLoc + curLen, cont, contLen);
+            curLoc[curLen + contLen] = '\0';
+          }
+        } else if (curProp == PropType::Rrule) {
+          size_t curLen = strlen(curRrule);
+          if (curLen + contLen < sizeof(curRrule) - 1) {
+            memcpy(curRrule + curLen, cont, contLen);
+            curRrule[curLen + contLen] = '\0';
+          }
+        }
+        // Ignored properties drop continuation lines with ZERO heap allocations!
+        return;
+      }
+
+      // Non-folded line: identify property
+      if (strncmp(line, "BEGIN:VEVENT", 12) == 0) {
         inEvent = true;
-        curSummary = "";
-        curStartRaw = "";
-        curEndRaw = "";
-        curLoc = "";
-        curRrule = "";
+        curProp = PropType::None;
+        curSummary[0] = '\0';
+        curLoc[0] = '\0';
+        curStartRaw[0] = '\0';
+        curEndRaw[0] = '\0';
+        curRrule[0] = '\0';
         isAllDay = false;
         return;
       }
 
-      if (line.startsWith("END:VEVENT")) {
+      if (strncmp(line, "END:VEVENT", 10) == 0) {
         evaluateEvent();
         inEvent = false;
+        curProp = PropType::None;
         return;
       }
 
-      if (inEvent) {
-        if (line.startsWith("SUMMARY:")) {
-          curSummary = line.substring(8);
-        } else if (line.startsWith("LOCATION:")) {
-          curLoc = line.substring(9);
-        } else if (line.startsWith("DTSTART")) {
-          int colon = line.indexOf(':');
-          if (colon >= 0) curStartRaw = line.substring(colon + 1);
-        } else if (line.startsWith("DTEND")) {
-          int colon = line.indexOf(':');
-          if (colon >= 0) curEndRaw = line.substring(colon + 1);
-        } else if (line.startsWith("RRULE:")) {
-          curRrule = line.substring(6);
+      if (strncmp(line, "END:VCALENDAR", 13) == 0) {
+        sawEndVCalendar = true;
+        curProp = PropType::None;
+        return;
+      }
+
+      if (!inEvent) {
+        curProp = PropType::Ignored;
+        return;
+      }
+
+      if (strncmp(line, "SUMMARY:", 8) == 0) {
+        curProp = PropType::Summary;
+        const char* val = line + 8;
+        size_t vLen = len - 8;
+        if (vLen >= sizeof(curSummary)) vLen = sizeof(curSummary) - 1;
+        memcpy(curSummary, val, vLen);
+        curSummary[vLen] = '\0';
+      } else if (strncmp(line, "LOCATION:", 9) == 0) {
+        curProp = PropType::Location;
+        const char* val = line + 9;
+        size_t vLen = len - 9;
+        if (vLen >= sizeof(curLoc)) vLen = sizeof(curLoc) - 1;
+        memcpy(curLoc, val, vLen);
+        curLoc[vLen] = '\0';
+      } else if (strncmp(line, "DTSTART", 7) == 0) {
+        curProp = PropType::DtStart;
+        const char* colon = strchr(line, ':');
+        if (colon) {
+          const char* val = colon + 1;
+          size_t vLen = strlen(val);
+          if (vLen >= sizeof(curStartRaw)) vLen = sizeof(curStartRaw) - 1;
+          memcpy(curStartRaw, val, vLen);
+          curStartRaw[vLen] = '\0';
         }
+      } else if (strncmp(line, "DTEND", 5) == 0) {
+        curProp = PropType::DtEnd;
+        const char* colon = strchr(line, ':');
+        if (colon) {
+          const char* val = colon + 1;
+          size_t vLen = strlen(val);
+          if (vLen >= sizeof(curEndRaw)) vLen = sizeof(curEndRaw) - 1;
+          memcpy(curEndRaw, val, vLen);
+          curEndRaw[vLen] = '\0';
+        }
+      } else if (strncmp(line, "RRULE:", 6) == 0) {
+        curProp = PropType::Rrule;
+        const char* val = line + 6;
+        size_t vLen = len - 6;
+        if (vLen >= sizeof(curRrule)) vLen = sizeof(curRrule) - 1;
+        memcpy(curRrule, val, vLen);
+        curRrule[vLen] = '\0';
+      } else {
+        curProp = PropType::Ignored;
       }
     };
 
+    // Leitura em blocos de 512B com buffer de linha fixo de 512B (ZERO heap allocations no hot path)
+    char readBuf[512];
+    char lineBuf[512];
+    size_t lineLen = 0;
+
     while (http.connected() || stream->available() > 0) {
-      if (stream->available() > 0) {
-        String line = stream->readStringUntil('\n');
-        totalBytes += line.length() + 1;
+      int avail = stream->available();
+      if (avail > 0) {
+        int toRead = avail > (int)sizeof(readBuf) ? (int)sizeof(readBuf) : avail;
+        int bytesRead = stream->readBytes(readBuf, toRead);
+        if (bytesRead <= 0) break;
+
+        totalBytes += bytesRead;
         lastDataMs = millis();
 
-        if (line.endsWith("\r")) line.remove(line.length() - 1);
+        for (int i = 0; i < bytesRead; ++i) {
+          char c = readBuf[i];
+          if (c == '\r') continue;
 
-        // RFC 5545 line folding: if starts with space or tab, append to previous line
-        if (line.startsWith(" ") || line.startsWith("\t")) {
-          prevLine += line.substring(1);
-          continue;
-        }
+          if (c == '\n') {
+            lineBuf[lineLen] = '\0';
+            handleCompletedLine(lineBuf, lineLen);
+            lineLen = 0;
+            lineCount++;
 
-        if (prevLine.length() > 0) {
-          handleIcalLine(prevLine);
+            // Periodic gate check (every 64 lines or ~250ms)
+            if ((lineCount & 0x3F) == 0) {
+              uint32_t nowCheck = millis();
+              if (WiFi.status() != WL_CONNECTED) {
+                Serial.println("[GoogleCalendar] fetch aborted: Wi-Fi dropped mid-stream");
+                abortRequested = true;
+                break;
+              }
+              if (preflightGate && !preflightGate()) {
+                Serial.println("[GoogleCalendar] fetch aborted: gate closed mid-stream (Gemini active or system not idle)");
+                abortRequested = true;
+                break;
+              }
+              size_t fHeap = ESP.getFreeHeap();
+              size_t mAlloc = ESP.getMaxAllocHeap();
+              if (fHeap < 12000 || mAlloc < 5000) {
+                Serial.printf("[GoogleCalendar] fetch aborted: low heap mid-stream (freeHeap=%u maxAlloc=%u)\n",
+                              static_cast<unsigned>(fHeap), static_cast<unsigned>(mAlloc));
+                abortRequested = true;
+                break;
+              }
+              if (veventCount > 6000 || totalBytes > 4 * 1024 * 1024 || (nowCheck - fetchStartMs > 60000)) {
+                Serial.printf("[GoogleCalendar] fetch aborted: defensive hard limit hit (vevents=%u bytes=%u elapsed=%lu)\n",
+                              static_cast<unsigned>(veventCount), static_cast<unsigned>(totalBytes),
+                              static_cast<unsigned long>(nowCheck - fetchStartMs));
+                abortRequested = true;
+                break;
+              }
+            }
+          } else {
+            if (lineLen < sizeof(lineBuf) - 1) {
+              lineBuf[lineLen++] = c;
+            }
+          }
         }
-        prevLine = line;
-        lineCount++;
+        if (abortRequested) break;
       } else {
-        delay(10);
+        vTaskDelay(pdMS_TO_TICKS(10));
         if (millis() - lastDataMs > 5000) {
           Serial.println("[GoogleCalendar] Stream read timeout (5s idle)");
           break;
         }
       }
     }
-    if (prevLine.length() > 0) {
-      handleIcalLine(prevLine);
+
+    if (!abortRequested && lineLen > 0) {
+      lineBuf[lineLen] = '\0';
+      handleCompletedLine(lineBuf, lineLen);
+      lineCount++;
     }
 
     http.end();
+
+    if (abortRequested) {
+      Serial.println("[GoogleCalendar] Fetch aborted mid-stream. PRESERVING OLD CACHE.");
+      return false;
+    }
+
+    // Guard: Never publish a truncated or incomplete stream!
+    if (!sawEndVCalendar) {
+      Serial.printf("[GoogleCalendar] Incomplete stream (missing END:VCALENDAR, %u bytes, %u lines). PRESERVING OLD CACHE.\n",
+                    static_cast<unsigned>(totalBytes), static_cast<unsigned>(lineCount));
+      return false;
+    }
 
     Serial.printf("[GoogleCalendar] stream finished: %u bytes, %u lines, %u vevents, %u parsed events\n",
                   static_cast<unsigned>(totalBytes),
@@ -445,34 +683,51 @@ class GoogleCalendarClient {
                   static_cast<unsigned>(veventCount),
                   static_cast<unsigned>(parsedEvents.size()));
 
-    // Sort: earlier days first, then all-day, then by start time
     std::sort(parsedEvents.begin(), parsedEvents.end(), [](const CalendarEvent& a, const CalendarEvent& b) {
       if (a.dayOffset != b.dayOffset) return a.dayOffset < b.dayOffset;
       if (a.isAllDay != b.isAllDay) return a.isAllDay;
       return a.startMinutes < b.startMinutes;
     });
 
-    cachedEvents_ = std::move(parsedEvents);
-    lastPrefetchDateStr_ = String(todayStr);
-    hasCache_ = true;
-    lastFetchMs_ = millis();
+    // Destroy old vector OUTSIDE the lock to minimize hold time
+    std::vector<CalendarEvent> oldEventsToDestroy;
+    if (calMutex_ && xSemaphoreTake(calMutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+      cachedEvents_.swap(parsedEvents);
+      oldEventsToDestroy.swap(parsedEvents);
+      lastPrefetchDateStr_ = String(todayStr);
+      hasCache_.store(true, std::memory_order_release);
+      refreshRequested_.store(false, std::memory_order_release);
+      lastFetchMs_ = millis();
+      xSemaphoreGive(calMutex_);
+    } else {
+      Serial.println("[GoogleCalendar] ERROR: Could not acquire calMutex_ to commit cache");
+      return false;
+    }
 
-    Serial.printf("[GoogleCalendar] prefetch complete: %u events in 3-day cache\n",
+    Serial.printf("[GoogleCalendar] fetch complete on Core %d: %u events in 3-day cache\n",
+                  xPortGetCoreID(),
                   static_cast<unsigned>(cachedEvents_.size()));
     return true;
   }
 
   String fetchDailyAgendaJson() {
-    Serial.printf("[DIAG:calendar:entry] task='%s' stackHWM=%u freeHeap=%u minFreeHeap=%u maxAllocHeap=%u hasCache=%d\n",
+    Serial.printf("[DIAG:calendar:entry] task='%s' core=%d stackHWM=%u freeHeap=%u minFreeHeap=%u maxAllocHeap=%u hasCache=%d\n",
                   pcTaskGetName(nullptr),
+                  xPortGetCoreID(),
                   static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
                   static_cast<unsigned>(ESP.getFreeHeap()),
                   static_cast<unsigned>(ESP.getMinFreeHeap()),
                   static_cast<unsigned>(ESP.getMaxAllocHeap()),
-                  hasCache_ ? 1 : 0);
+                  hasCache_.load(std::memory_order_acquire) ? 1 : 0);
 
-    String url = config_.readCalendarUrl();
-    url.trim();
+    String url;
+    if (calMutex_ && xSemaphoreTake(calMutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+      url = cachedUrl_;
+      xSemaphoreGive(calMutex_);
+    } else {
+      return makeWarmingUpJson();
+    }
+
     if (!url.length()) {
       JsonDocument doc;
       doc["ok"] = false;
@@ -484,18 +739,21 @@ class GoogleCalendarClient {
       return out;
     }
 
-    if (!hasCache_) {
-      JsonDocument doc;
-      doc["ok"] = false;
-      doc["error"] = "calendar_warming_up";
-      doc["message"] = "A sincronizacao da agenda ainda esta em andamento ou temporariamente indisponivel.";
-      doc["instruction"] = "Avise com simpatia que a agenda ainda esta sincronizando ou temporariamente indisponivel e peca para tentar novamente em alguns instantes. NUNCA diga que o dia esta livre nem invente compromissos.";
-      String out;
-      serializeJson(doc, out);
-      return out;
+    if (!hasCache_.load(std::memory_order_acquire)) {
+      return makeWarmingUpJson();
     }
 
-    // Determine current local date/time
+    // Copy cached events locally under short mutex lock
+    std::vector<CalendarEvent> localEvents;
+    if (calMutex_ && xSemaphoreTake(calMutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+      localEvents = cachedEvents_;
+      xSemaphoreGive(calMutex_);
+    } else {
+      Serial.println("[GoogleCalendar] calMutex_ timeout in fetchDailyAgendaJson -> returning warming up");
+      return makeWarmingUpJson();
+    }
+
+    // Now format JSON from localEvents (100% lock-free)
     time_t nowSec = time(nullptr);
     struct tm nowTm {};
     localtime_r(&nowSec, &nowTm);
@@ -524,11 +782,10 @@ class GoogleCalendarClient {
     int nowMinutes = curHour * 60 + curMin;
     bool nextFound = false;
 
-    // Build the result JSON for Gemini Live - dynamic date matching against current clock
     JsonDocument outDoc;
     auto evArr = outDoc["events"].to<JsonArray>();
 
-    for (const auto& ev : cachedEvents_) {
+    for (const auto& ev : localEvents) {
       String dayLabel = "";
       bool isToday = (ev.dateStr == readableDate);
       bool isTomorrow = (ev.dateStr == readableTomorrow);
@@ -540,7 +797,7 @@ class GoogleCalendarClient {
         dayLabel = "amanha";
         countTomorrow++;
       } else {
-        continue; // Event is outside today/tomorrow window
+        continue;
       }
 
       auto obj = evArr.add<JsonObject>();
@@ -609,41 +866,76 @@ class GoogleCalendarClient {
     return jsonResult;
   }
 
-  bool hasCache() const { return hasCache_; }
-  size_t cachedEventCount() const { return cachedEvents_.size(); }
-
  private:
   ConfigManager& config_;
+  SemaphoreHandle_t calMutex_ = nullptr;
+  String cachedUrl_;
+  int cachedTimezoneOffset_ = -3;
   std::vector<CalendarEvent> cachedEvents_;
   String lastPrefetchDateStr_;
-  bool hasCache_ = false;
+  std::atomic<bool> hasCache_{false};
+  std::atomic<bool> refreshRequested_{false};
+  std::atomic<bool> inFlight_{false};
   uint32_t lastFetchMs_ = 0;
 
-  static void parseIcalDateTime(const String& raw, int& year, int& month, int& day,
+  static String makeWarmingUpJson() {
+    JsonDocument doc;
+    doc["ok"] = false;
+    doc["error"] = "calendar_warming_up";
+    doc["message"] = "A sincronizacao da agenda ainda esta em andamento ou temporariamente indisponivel.";
+    doc["instruction"] = "Avise com simpatia que a agenda ainda esta sincronizando ou temporariamente indisponivel e peca para tentar novamente em alguns instantes. NUNCA diga que o dia esta livre nem invente compromissos.";
+    String out;
+    serializeJson(doc, out);
+    return out;
+  }
+
+  static void parseIcalDateTime(const char* raw, int& year, int& month, int& day,
                                 int& hour, int& min, bool& isUtc, bool& isAllDay) {
     year = 0; month = 0; day = 0; hour = 0; min = 0;
-    isUtc = raw.endsWith("Z");
-    isAllDay = (raw.length() == 8 && raw.indexOf('T') < 0);
+    if (!raw) return;
+    size_t len = strlen(raw);
+    isUtc = (len > 0 && raw[len - 1] == 'Z');
+    isAllDay = (len == 8 && strchr(raw, 'T') == nullptr);
 
-    if (raw.length() >= 8) {
-      year = raw.substring(0, 4).toInt();
-      month = raw.substring(4, 6).toInt();
-      day = raw.substring(6, 8).toInt();
+    if (len >= 8) {
+      char tmp[5] = {0};
+      tmp[0] = raw[0]; tmp[1] = raw[1]; tmp[2] = raw[2]; tmp[3] = raw[3];
+      year = atoi(tmp);
+      tmp[2] = '\0';
+      tmp[0] = raw[4]; tmp[1] = raw[5];
+      month = atoi(tmp);
+      tmp[0] = raw[6]; tmp[1] = raw[7];
+      day = atoi(tmp);
     }
-    int tPos = raw.indexOf('T');
-    if (tPos >= 0 && raw.length() >= tPos + 5) {
-      hour = raw.substring(tPos + 1, tPos + 3).toInt();
-      min = raw.substring(tPos + 3, tPos + 5).toInt();
+    const char* tPos = strchr(raw, 'T');
+    if (tPos && strlen(tPos) >= 5) {
+      char tmp[3] = {0};
+      tmp[0] = tPos[1]; tmp[1] = tPos[2];
+      hour = atoi(tmp);
+      tmp[0] = tPos[3]; tmp[1] = tPos[4];
+      min = atoi(tmp);
     }
   }
 
-  static String cleanIcalText(String s) {
-    s.replace("\\,", ",");
-    s.replace("\\;", ";");
-    s.replace("\\n", " ");
-    s.replace("\\N", " ");
-    s.replace("\\\\", "\\");
-    s.trim();
-    return s;
+  static void cleanIcalText(const char* src, char* out, size_t maxLen) {
+    if (!src || !out || maxLen == 0) return;
+    size_t si = 0, oi = 0;
+    while (src[si] != '\0' && oi + 1 < maxLen) {
+      if (src[si] == '\\') {
+        si++;
+        if (src[si] == '\0') break;
+        if (src[si] == 'n' || src[si] == 'N') out[oi++] = ' ';
+        else if (src[si] == ',' || src[si] == ';' || src[si] == '\\') out[oi++] = src[si];
+        else out[oi++] = src[si];
+        si++;
+      } else {
+        out[oi++] = src[si++];
+      }
+    }
+    out[oi] = '\0';
+    while (oi > 0 && (out[oi - 1] == ' ' || out[oi - 1] == '\r' || out[oi - 1] == '\n' || out[oi - 1] == '\t')) {
+      out[--oi] = '\0';
+    }
   }
 };
+

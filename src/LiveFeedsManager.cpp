@@ -1,9 +1,12 @@
 #include "LiveFeedsManager.h"
 #include "GeminiLiveProbe.h"
+#include "GoogleCalendarClient.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <time.h>
+#include <esp_sntp.h>
 
 namespace {
 struct RequestInFlightGuard {
@@ -159,6 +162,12 @@ void LiveFeedsManager::forceRefresh() {
   requestRefresh();
 }
 
+void LiveFeedsManager::requestCalendarRefresh() {
+  calendarRefreshRequested_.store(true, std::memory_order_release);
+  if (calendar_) calendar_->requestRefresh();
+  Serial.println("[LiveFeeds] Calendar refresh requested (enqueued for worker).");
+}
+
 uint32_t LiveFeedsManager::getStackHighWaterMark() const {
   if (!workerTaskHandle_) return 0;
   return static_cast<uint32_t>(uxTaskGetStackHighWaterMark(workerTaskHandle_));
@@ -274,9 +283,85 @@ LiveFeedsManager::DreamCardData LiveFeedsManager::getDreamCard(uint8_t index) co
 
 bool LiveFeedsManager::canStartRequest() const {
   if (WiFi.status() != WL_CONNECTED) return false;
+  if (gemini_ && gemini_->isConnectingOrHandshaking()) return false;
   if (bootPrefetchActive_.load(std::memory_order_acquire)) return true;
   // Core 1 loopTask evaluates system idle state (IDLE or Sleep; blocks on LISTENING, WAITING_MODEL, TOOL_CALL, SPEAKING)
   return systemIdle_.load(std::memory_order_acquire);
+}
+
+bool LiveFeedsManager::canStartCalendarFetch() const {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (!systemIdle_.load(std::memory_order_acquire)) return false;
+
+  if (gemini_) {
+    if (gemini_->isSpeaking() || gemini_->isRecording() || gemini_->isTurnBusy()) return false;
+    if (gemini_->turnState() != GeminiLiveProbe::LiveTurnState::IDLE) return false;
+    if (gemini_->isConnectingOrHandshaking()) return false;
+  }
+
+  if (!calendarJobInFlight_.load(std::memory_order_acquire) && requestInFlight_.load(std::memory_order_acquire)) return false;
+  if (step_.load(std::memory_order_acquire) != CycleStep::Idle) return false;
+
+  time_t nowSec = time(nullptr);
+  struct tm nowTm {};
+  localtime_r(&nowSec, &nowTm);
+  if ((nowTm.tm_year + 1900) < 2024) return false;
+
+  size_t freeHeap = ESP.getFreeHeap();
+  size_t maxAlloc = ESP.getMaxAllocHeap();
+  if (freeHeap < 48000 || maxAlloc < 20000) return false;
+
+  return true;
+}
+
+bool LiveFeedsManager::canContinueCalendarFetch() const {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (!systemIdle_.load(std::memory_order_acquire)) return false;
+
+  if (gemini_) {
+    if (gemini_->isSpeaking() || gemini_->isRecording() || gemini_->isTurnBusy()) return false;
+    if (gemini_->turnState() != GeminiLiveProbe::LiveTurnState::IDLE) return false;
+    if (gemini_->isConnectingOrHandshaking()) return false;
+  }
+
+  return true;
+}
+
+void LiveFeedsManager::executeCalendarFetch() {
+  if (!calendar_) return;
+
+  RequestInFlightGuard guard(requestInFlight_);
+  calendarJobInFlight_.store(true, std::memory_order_release);
+  state_.store(WorkerState::Running, std::memory_order_release);
+
+  Serial.println("[LiveFeedsWorker] Starting background Google Calendar fetch on Core 0...");
+  uint32_t t0 = millis();
+
+  bool ok = calendar_->executeFetch([this]() -> bool {
+    return canContinueCalendarFetch();
+  });
+
+  uint32_t elapsed = millis() - t0;
+  lastCalendarAttemptMs_ = millis();
+
+  if (ok) {
+    lastCalendarFetchMs_ = millis();
+    calendarNextRetryMs_ = 0;
+    calendarRefreshRequested_.store(false, std::memory_order_release);
+    Serial.printf("[LiveFeedsWorker] Google Calendar fetch complete (%u ms). Cache updated.\n",
+                  static_cast<unsigned>(elapsed));
+  } else {
+    calendarNextRetryMs_ = millis() + kCalendarFailureBackoffMs;
+    Serial.printf("[LiveFeedsWorker] Google Calendar fetch failed/aborted (%u ms). Backing off for %u s\n",
+                  static_cast<unsigned>(elapsed),
+                  static_cast<unsigned>(kCalendarFailureBackoffMs / 1000));
+  }
+
+  calendarJobInFlight_.store(false, std::memory_order_release);
+  state_.store(WorkerState::Idle, std::memory_order_release);
+
+  UBaseType_t hwm = uxTaskGetStackHighWaterMark(nullptr);
+  Serial.printf("[LiveFeedsWorker] Post-calendar Stack HWM: %u bytes remaining\n", static_cast<unsigned>(hwm));
 }
 
 void LiveFeedsManager::workerTaskThunk(void* param) {
@@ -324,6 +409,23 @@ void LiveFeedsManager::workerTaskLoop() {
         step_.store(CycleStep::PendingNews, std::memory_order_release);
         currentStep = CycleStep::PendingNews;
         Serial.println("[LiveFeedsWorker] Starting sequential refresh cycle (News -> Weather -> USD)...");
+      } else if (!bootPrefetchActive_.load(std::memory_order_acquire) && calendar_ && !calendarJobInFlight_.load(std::memory_order_acquire)) {
+        bool calNeeded = false;
+        if (calendar_->isRefreshRequested() || calendarRefreshRequested_.load(std::memory_order_acquire)) {
+          calNeeded = true;
+        } else if (!calendar_->hasCache() || !calendar_->isCacheValidForToday()) {
+          if (now >= calendarNextRetryMs_ && (now - lastCalendarAttemptMs_ >= 60000UL)) {
+            calNeeded = true;
+          }
+        } else if (now - lastCalendarFetchMs_ >= kCalendarRefreshIntervalMs) {
+          calNeeded = true;
+        }
+
+        if (calNeeded && now >= calendarNextRetryMs_) {
+          if (canStartCalendarFetch()) {
+            executeCalendarFetch();
+          }
+        }
       }
     }
 

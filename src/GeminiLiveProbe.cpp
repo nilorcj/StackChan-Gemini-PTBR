@@ -626,6 +626,7 @@ void GeminiLiveProbe::loop() {
       end_session_requested_ = false;
       end_session_requested_ms_ = 0;
       setTurnState(LiveTurnState::IDLE, "end session");
+      Serial.printf("[DIAG:SLEEP] trigger=Gemini_end_session millis=%lu\n", millis());
       if (emotion_) emotion_->setEmotion("sleep");
       Serial.println("Status: sleeping...");
       disconnect(true, "sleep");
@@ -707,6 +708,8 @@ void GeminiLiveProbe::loop() {
   }
   if (isReady() && !continuous_conversation_ && !realtime_recording_ && !speaking_ &&
       last_activity_ms_ && millis() - last_activity_ms_ > IDLE_DISCONNECT_MS) {
+    Serial.printf("[DIAG:SLEEP] trigger=Gemini_idle_disconnect last_act=%lu diff=%lu millis=%lu\n",
+                  last_activity_ms_, millis() - last_activity_ms_, millis());
     Serial.println("GeminiLive: idle disconnect");
     disconnect(true, "sleep");
   }
@@ -1346,6 +1349,7 @@ void GeminiLiveProbe::requestSessionEnd(const String& reason) {
   pending_start_recording_ = false;
   continuous_conversation_ = false;
   if (realtime_recording_) stopRealtimeRecord();
+  Serial.printf("[DIAG:SLEEP] trigger=Gemini_tool_sleep speaking=%d millis=%lu\n", (int)speaking_, millis());
   if (emotion_ && !speaking_) emotion_->setEmotion("sleep");
   last_activity_ms_ = millis();
 }
@@ -1761,6 +1765,9 @@ void GeminiLiveProbe::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
         self_->speaking_started_ms_ = 0;
         self_->playback_started_ms_ = 0;
         self_->setTurnState(LiveTurnState::IDLE, "ws disconnected");
+        Serial.printf("[DIAG:SLEEP] ws_disconnected was_active=%d should_sleep=%d intentional=%d emo=%s millis=%lu\n",
+                      (int)was_active, (int)should_sleep, (int)self_->intentional_disconnect_,
+                      should_sleep ? "sleep" : self_->intentional_disconnect_emotion_.c_str(), millis());
         if (self_->emotion_) self_->emotion_->setEmotion(should_sleep ? "sleep" : self_->intentional_disconnect_emotion_.c_str());
       }
       self_->continuous_conversation_ = false;

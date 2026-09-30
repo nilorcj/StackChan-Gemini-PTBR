@@ -7,6 +7,8 @@
 extern UnitPaHubManager unitPaHub;
 #include "GoogleCalendarClient.h"
 extern GoogleCalendarClient googleCalendar;
+#include "LiveFeedsManager.h"
+extern LiveFeedsManager liveFeeds;
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFi.h>
@@ -15,6 +17,12 @@ extern GoogleCalendarClient googleCalendar;
 #include <math.h>
 
 extern volatile bool g_voice_toggle_requested;
+
+extern uint16_t getCachedTofDistanceMm();
+extern bool getCachedTofPresence();
+extern float getCachedTemp();
+extern float getCachedHumidity();
+extern float getCachedPressure();
 
 namespace {
 constexpr const char* kConfigDir = "/app/StackChan/config";
@@ -220,63 +228,643 @@ void fillAudioDirectionDiagnostic(JsonObject audio, bool geminiBusy) {
 
 const char kIndexHtml[] PROGMEM = R"HTML(
 <!doctype html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>StackChan Config</title>
+  <title>Central da Pix</title>
   <style>
-    :root{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;background:#111827;color:#e5e7eb}
-    body{margin:0;padding:16px;max-width:920px;margin:auto}
-    h1{font-size:28px;margin:8px 0 4px}.muted{color:#9ca3af}.grid{display:grid;gap:14px}.tabs{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}.tab{background:#374151;color:#e5e7eb;padding:9px 12px;margin:0}.tab.active{background:#f59e0b;color:#451a03}.card[data-tab]{display:none}.card[data-tab].active{display:block}
-    .card{background:#1f2937;border:1px solid #374151;border-radius:14px;padding:14px;box-shadow:0 1px 12px #0005}
-    label{display:block;margin:10px 0 4px;color:#cbd5e1}input,textarea,select{width:100%;box-sizing:border-box;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;padding:10px;font:inherit}textarea{min-height:120px}
-    button{border:0;border-radius:10px;background:#22c55e;color:#052e16;padding:10px 14px;font-weight:700;margin:8px 8px 0 0}.secondary{background:#38bdf8;color:#082f49}.danger{background:#fb7185;color:#4c0519}
-    pre{white-space:pre-wrap;background:#0b1020;border-radius:10px;padding:10px;overflow:auto}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}@media(max-width:700px){.row{grid-template-columns:1fr}}
+    :root{--bg:#0b0f19;--card:#151e2e;--card-border:#232f46;--text:#f8fafc;--muted:#94a3b8;--primary:#38bdf8;--green:#22c55e;--amber:#f59e0b;--red:#ef4444;--purple:#a855f7;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+    *{box-sizing:border-box}
+    body{font-family:var(--font);background:var(--bg);color:var(--text);margin:0;padding:16px;max-width:960px;margin:auto;line-height:1.5}
+    header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--card-border);margin-bottom:16px}
+    h1{font-size:24px;margin:0;display:flex;align-items:center;gap:8px}
+    .sub{color:var(--muted);font-size:13px}
+    .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+    .tab{background:#1e293b;color:var(--muted);border:1px solid var(--card-border);border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer;font-size:14px;transition:all .15s}
+    .tab.active{background:var(--primary);color:#082f49;border-color:var(--primary)}
+    .view{display:none}.view.active{display:block}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+    .card{background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:14px;box-shadow:0 2px 10px rgba(0,0,0,0.3)}
+    .card h3{margin:0 0 10px;font-size:15px;color:var(--primary);display:flex;align-items:center;justify-content:space-between}
+    .card-full{grid-column:1/-1}
+    .kv{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px}
+    .kv:last-child{border-bottom:none}
+    .k{color:var(--muted)}
+    .v{font-weight:600;font-family:ui-monospace,Menlo,monospace}
+    .badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:700}
+    .badge-green{background:rgba(34,197,94,0.2);color:#4ade80;border:1px solid rgba(34,197,94,0.4)}
+    .badge-amber{background:rgba(245,158,11,0.2);color:#fbbf24;border:1px solid rgba(245,158,11,0.4)}
+    .badge-red{background:rgba(239,68,68,0.2);color:#f87171;border:1px solid rgba(239,68,68,0.4)}
+    .badge-blue{background:rgba(56,189,248,0.2);color:#38bdf8;border:1px solid rgba(56,189,248,0.4)}
+    .badge-purple{background:rgba(168,85,247,0.2);color:#c084fc;border:1px solid rgba(168,85,247,0.4)}
+    .badge-gray{background:rgba(148,163,184,0.2);color:#cbd5e1;border:1px solid rgba(148,163,184,0.4)}
+    label{display:block;margin:10px 0 4px;font-size:13px;color:#cbd5e1}
+    input,select,textarea{width:100%;border-radius:8px;border:1px solid #334155;background:#0b0f19;color:var(--text);padding:8px 10px;font:inherit;font-size:13px}
+    input[type=checkbox]{width:auto;margin-right:8px;vertical-align:middle}
+    input[type=range]{padding:0}
+    textarea{min-height:90px;font-family:ui-monospace,monospace;font-size:12px}
+    button{border:0;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer;transition:opacity .15s}
+    button:hover{opacity:.85}
+    .btn-primary{background:var(--primary);color:#082f49}
+    .btn-green{background:var(--green);color:#052e16}
+    .btn-danger{background:var(--red);color:#450a0a}
+    .btn-sec{background:#334155;color:#f1f5f9}
+    .btn-bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    @media(max-width:640px){.row{grid-template-columns:1fr}}
+    .feedback{margin-top:10px;padding:8px 12px;border-radius:8px;font-size:13px;display:none}
+    .feedback.ok{display:block;background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3)}
+    .feedback.err{display:block;background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3)}
+    .fact-card{background:#0b0f19;border:1px solid var(--card-border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
+    .fact-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+    .fact-key{font-family:ui-monospace,monospace;font-size:12px;font-weight:700;color:var(--primary)}
+    .fact-text{font-size:13px;color:#f1f5f9;line-height:1.4}
+    .fact-ts{margin-left:auto;font-size:11px;color:var(--muted)}
+    footer{margin-top:24px;text-align:center;color:var(--muted);font-size:13px;border-top:1px solid var(--card-border);padding-top:12px}
+    footer a{color:var(--primary);text-decoration:none}
   </style>
 </head>
 <body>
-  <h1>StackChan Config</h1>
-  <p class="muted">Local configuration panel. Secrets are stored but never shown back.</p>
-  <nav class="tabs" aria-label="Settings sections"><button class="tab active" onclick="openTab('status')">Status</button><button class="tab" onclick="openTab('runtime')">Runtime</button><button class="tab" onclick="openTab('gateway')">Gateway</button><button class="tab" onclick="openTab('secrets')">Secrets</button><button class="tab" onclick="openTab('security')">Security</button><button class="tab" onclick="openTab('prompts')">Prompts</button><button class="tab" onclick="openTab('memory')">Memory</button></nav>
-  <div class="grid">
-    <section class="card active" data-tab="status"><h2>Status</h2><button onclick="loadStatus()" class="secondary">Refresh</button><button onclick="voiceToggle()">Wake / sleep</button><p class="muted">Uses the same voice toggle as touch: if the dialogue is asleep it wakes it, if it is listening it stops it.</p><pre id="status">...</pre></section>
-    <section class="card" data-tab="runtime"><h2>Runtime</h2><div class="row"><div><label>Robot ID</label><input id="robotId" value="stackchan"></div><div><label>Gemini model</label><input id="geminiModel" placeholder="models/gemini-3.1-flash-live-preview"></div></div><label>Gemini voice</label><select id="geminiVoice"><option value="Puck">Puck — upbeat</option><option value="Charon">Charon — informative</option><option value="Kore">Kore — firm</option><option value="Fenrir">Fenrir — excitable</option><option value="Aoede">Aoede — breezy</option><option value="Zephyr">Zephyr — bright</option><option value="Leda">Leda — youthful</option><option value="Orus">Orus — firm</option><option value="Callirrhoe">Callirrhoe — easy-going</option><option value="Autonoe">Autonoe — bright</option><option value="Enceladus">Enceladus — breathy</option><option value="Iapetus">Iapetus</option><option value="Umbriel">Umbriel</option><option value="Algieba">Algieba</option><option value="Despina">Despina</option><option value="Erinome">Erinome</option><option value="Algenib">Algenib</option><option value="Rasalgethi">Rasalgethi</option><option value="Laomedeia">Laomedeia</option><option value="Achernar">Achernar</option><option value="Alnilam">Alnilam</option><option value="Schedar">Schedar</option><option value="Gacrux">Gacrux</option><option value="Pulcherrima">Pulcherrima</option><option value="Achird">Achird</option><option value="Zubenelgenubi">Zubenelgenubi</option><option value="Vindemiatrix">Vindemiatrix</option><option value="Sadachbia">Sadachbia</option><option value="Sadaltager">Sadaltager</option><option value="Sulafat">Sulafat</option></select><p class="muted">Voice applies to the next Gemini Live session after reboot/reconnect.</p><label>Timezone (Fuso Horário)</label><select id="timezoneOffset"><option value="-5">UTC-5 (Acre / Rio Branco)</option><option value="-4">UTC-4 (Manaus / Cuiabá / Boa Vista)</option><option value="-3">UTC-3 (Brasília / São Paulo / Salvador)</option><option value="-2">UTC-2 (Fernando de Noronha)</option><option value="-1">UTC-1 (Cabo Verde / Açores)</option><option value="0">UTC 0 (Londres / GMT)</option><option value="1">UTC+1 (Europa Central)</option></select><p class="muted">Fuso horário aplicado ao relógio local e à agenda.</p><label>Wi‑Fi SSID</label><input id="wifiSsid" placeholder="SSID is stored; password is stored separately in secrets"><label>Gateway Base URL</label><input id="gatewayUrl" placeholder="http://gateway.local:8811/stackchan"><label>Speaker volume: <span id="speakerVolumeLabel">200</span> / 255</label><input id="speakerVolume" type="range" min="0" max="255" step="1" value="200" oninput="speakerVolumeLabel.textContent=this.value"><div class="row"><div><label>Mic gain: <span id="micMagnificationLabel">16</span> / 24</label><input id="micMagnification" type="range" min="1" max="24" step="1" value="16" oninput="micMagnificationLabel.textContent=this.value"><p class="muted">Safe runtime gain. Baseline is 16; for tests try 20→22→24.</p></div><div><label>Mic noise filter: <span id="micNoiseFilterLabel">0</span> / 4</label><input id="micNoiseFilter" type="range" min="0" max="4" step="1" value="0" oninput="micNoiseFilterLabel.textContent=this.value"><p class="muted">Baseline is 0. Increase carefully: the filter may suppress quiet speech.</p></div></div><div class="row"><div><label>VAD prefix padding: <span id="vadPrefixPaddingLabel">800</span> ms</label><input id="vadPrefixPadding" type="range" min="0" max="2000" step="100" value="800" oninput="vadPrefixPaddingLabel.textContent=this.value"><p class="muted">Buffer before speech starts. Helps avoid losing the beginning of a phrase.</p></div><div><label>VAD silence duration: <span id="vadSilenceDurationLabel">900</span> ms</label><input id="vadSilenceDuration" type="range" min="100" max="3000" step="100" value="900" oninput="vadSilenceDurationLabel.textContent=this.value"><p class="muted">Pause before ending an utterance. Higher values reduce cut-offs but slow responses.</p></div></div><div class="row"><label><input id="vadStartSensitivityHigh" type="checkbox" checked> VAD start sensitivity high</label><label><input id="vadEndSensitivityLow" type="checkbox" checked> VAD end sensitivity low</label><label><input id="vadTurnIncludesAllInput" type="checkbox" checked> Turn includes all input</label></div><div class="row"><label><input id="wifiEnabled" type="checkbox"> Wi‑Fi enabled</label><label><input id="webEnabled" type="checkbox"> Web UI enabled</label><label><input id="geminiEnabled" type="checkbox"> Gemini enabled</label><label><input id="gatewayEnabled" type="checkbox"> Gateway enabled</label></div><button onclick="saveRuntime(false)">Save runtime</button><button onclick="saveRuntime(true)" class="danger">Save and reboot</button><button onclick="loadRuntime()" class="secondary">Load runtime</button><p class="muted">Volume and most runtime settings apply after reboot. “Save and reboot” writes settings to SD first, then reboots the robot.</p></section>
-    <section class="card" data-tab="gateway"><h2>Gateway</h2><button onclick="loadTools()" class="secondary">Check tools</button><pre id="tools"></pre></section>
-    <section class="card" data-tab="secrets"><h2>Secrets</h2><div class="row"><div><label>Gemini API key</label><input id="geminiKey" type="password" placeholder="enter/replace"></div><div><label>Gateway token</label><input id="gatewayToken" type="password" placeholder="optional"></div><div><label>Wi‑Fi password</label><input id="wifiPassword" type="password" placeholder="enter/replace"></div><div><label>Google Calendar URL (.ics)</label><input id="calendarUrl" type="password" placeholder="enter/replace"></div></div><button onclick="saveSecrets()" class="danger">Save secrets</button><p class="muted">The API never returns secret values, only set/missing status.</p></section>
-    <section class="card" data-tab="security"><h2>Web security</h2><p class="muted">If no Web password is set, the local UI is open. After setting one, browser/API access uses HTTP Basic auth with user <code>stackchan</code>.</p><label>New Web password</label><input id="webPassword" type="password" placeholder="set or change password"><button onclick="saveWebPassword()" class="danger">Set Web password</button><p class="muted">Stored on SD as SHA-256, not returned by the API.</p></section>
-    <section class="card" data-tab="prompts"><h2>Additional prompts</h2><p class="muted">This is an SD/Web overlay appended to the base StackChan firmware instructions. The base prompt with camera, search, head, and safety rules is not shown or replaced here. Changes apply to the next Gemini Live session/connection.</p><label>Additional system overlay</label><textarea id="systemPrompt"></textarea><label>Persona / style overlay</label><textarea id="personaPrompt"></textarea><button onclick="savePrompts()">Save overlay</button><button onclick="loadPrompts()" class="secondary">Load</button></section>
-    <section class="card" data-tab="memory"><h2>Memory</h2><label>Summary model</label><input id="summaryModel" placeholder="gemini-flash-latest"><button onclick="saveSummaryConfig()" class="secondary">Save summary model</button><button onclick="loadMemory()" class="secondary">Context</button><button onclick="loadDialogues()" class="secondary">Dialogues</button><button onclick="loadSummaries()" class="secondary">Summary</button><label>Memory search</label><input id="memoryQuery" placeholder="who did you see today?"><button onclick="searchMemory()" class="secondary">Search memory</button><button onclick="loadMemoryStats()" class="secondary">Stats</button><button onclick="runSummarize()">Summarize</button><button onclick="runVectorize()">Vectorize</button><p class="muted">Summary v2 calls Gemini Flash/Lite using the SD API key. Ordinary numbers/dates/model IDs are preserved exactly; private PIN/code/password/address values remain markers and private-memory only.</p><pre id="memory"></pre></section>
-  </div>
-  <footer style="margin-top:20px;text-align:center;color:#9ca3af;font-size:14px;border-top:1px solid #374151;padding-top:12px">
-    <span id="deviceDateTime">--:-- | carregando...</span>
+  <header>
+    <div>
+      <h1>Central da Pix <span id="hdrStatusBadge" class="badge badge-green">Online</span></h1>
+      <div class="sub">Painel integrado de status, configuração e memória</div>
+    </div>
+    <div style="text-align:right">
+      <span id="deviceDateTime" class="sub">--:--</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" onclick="openTab('status')">Status</button>
+    <button class="tab" onclick="openTab('config')">Configuração</button>
+    <button class="tab" onclick="openTab('memory')">Memória</button>
+  </nav>
+
+  <!-- TAB: STATUS -->
+  <main id="view-status" class="view active">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span class="sub" id="lastUpdatedStatus">Atualizando...</span>
+      <button class="btn-sec" onclick="loadStatus()">Atualizar Agora</button>
+    </div>
+    <div class="grid">
+      <!-- Conectividade -->
+      <section class="card">
+        <h3>Conectividade Wi-Fi</h3>
+        <div class="kv"><span class="k">Estado</span><span class="v" id="stWifi">--</span></div>
+        <div class="kv"><span class="k">Endereço IP</span><span class="v" id="stIp">--</span></div>
+        <div class="kv"><span class="k">Sinal (RSSI)</span><span class="v" id="stRssi">--</span></div>
+        <div class="kv"><span class="k">Tempo Ativo (Uptime)</span><span class="v" id="stUptime">--</span></div>
+      </section>
+
+      <!-- Gemini & Voz -->
+      <section class="card">
+        <h3>Gemini & Conversação</h3>
+        <div class="kv"><span class="k">Conexão Live</span><span class="v" id="stGeminiConn">--</span></div>
+        <div class="kv"><span class="k">Turn State</span><span class="v" id="stTurnState">--</span></div>
+        <div class="kv"><span class="k">Microfone</span><span class="v" id="stMic">--</span></div>
+        <div class="kv"><span class="k">Alto-falante</span><span class="v" id="stSpk">--</span></div>
+        <div class="kv"><span class="k">Emoção Atual</span><span class="v" id="stEmotion">--</span></div>
+      </section>
+
+      <!-- Sensores ToF & Ambiente -->
+      <section class="card">
+        <h3>Sensores (ToF & Ambiente)</h3>
+        <div class="kv"><span class="k">Presença ToF</span><span class="v" id="stTofPresent">--</span></div>
+        <div class="kv"><span class="k">Distância ToF</span><span class="v" id="stTofDist">--</span></div>
+        <div class="kv"><span class="k">Temperatura</span><span class="v" id="stTemp">--</span></div>
+        <div class="kv"><span class="k">Umidade</span><span class="v" id="stHum">--</span></div>
+        <div class="kv"><span class="k">Pressão</span><span class="v" id="stPress">--</span></div>
+      </section>
+
+      <!-- Sistema & Memória -->
+      <section class="card">
+        <h3>Sistema & Hardware</h3>
+        <div class="kv"><span class="k">Bateria</span><span class="v" id="stBat">--</span></div>
+        <div class="kv"><span class="k">Heap Livre</span><span class="v" id="stHeap">--</span></div>
+        <div class="kv"><span class="k">Max Alloc</span><span class="v" id="stMaxAlloc">--</span></div>
+        <div class="kv"><span class="k">PSRAM Livre</span><span class="v" id="stPsram">--</span></div>
+      </section>
+
+      <!-- Agenda & Feeds -->
+      <section class="card card-full">
+        <h3>Agenda & Feeds em Tempo Real</h3>
+        <div class="row">
+          <div>
+            <div class="kv"><span class="k">Google Calendar</span><span class="v" id="stCal">--</span></div>
+            <div class="kv"><span class="k">Status da Agenda</span><span class="v" id="stCalValid">--</span></div>
+            <div class="kv"><span class="k">Sincronização Agenda</span><span class="v" id="stCalUpdating">--</span></div>
+          </div>
+          <div>
+            <div class="kv"><span class="k">Dólar (USD/BRL)</span><span class="v" id="stUsd">--</span></div>
+            <div class="kv"><span class="k">Notícias em Cache</span><span class="v" id="stNews">--</span></div>
+            <div class="kv"><span class="k">Manchete Recente</span><span class="v" id="stHeadline" style="font-size:11px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">--</span></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: CONFIGURAÇÃO -->
+  <main id="view-config" class="view">
+    <div id="cfgFeedback" class="feedback"></div>
+    <div class="grid">
+      <!-- Conectividade & Sistema -->
+      <section class="card">
+        <h3>Rede & Sistema</h3>
+        <label>Wi-Fi SSID</label>
+        <input id="wifiSsid" placeholder="SSID armazenado; vazio para manter">
+        <label>Fuso Horário (Timezone)</label>
+        <select id="timezoneOffset">
+          <option value="-5">UTC-5 (Acre)</option>
+          <option value="-4">UTC-4 (Manaus / Cuiabá)</option>
+          <option value="-3">UTC-3 (Brasília / São Paulo)</option>
+          <option value="-2">UTC-2 (Noronha)</option>
+          <option value="-1">UTC-1 (Cabo Verde)</option>
+          <option value="0">UTC 0 (Londres / GMT)</option>
+          <option value="1">UTC+1 (Europa Central)</option>
+        </select>
+        <label>Robot ID</label>
+        <input id="robotId" value="stackchan">
+        <label>Gateway Base URL</label>
+        <input id="gatewayUrl" placeholder="http://gateway.local:8811/stackchan">
+      </section>
+
+      <!-- Gemini Live -->
+      <section class="card">
+        <h3>Gemini Live & Serviços</h3>
+        <label>Modelo Gemini</label>
+        <input id="geminiModel" placeholder="models/gemini-3.1-flash-live-preview">
+        <label>Voz Gemini</label>
+        <select id="geminiVoice">
+          <option value="Puck">Puck — alegre</option>
+          <option value="Charon">Charon — informativo</option>
+          <option value="Kore">Kore — firme</option>
+          <option value="Fenrir">Fenrir — entusiasmado</option>
+          <option value="Aoede">Aoede — suave</option>
+          <option value="Zephyr">Zephyr — brilhante</option>
+          <option value="Leda">Leda — jovem</option>
+          <option value="Orus">Orus — firme</option>
+          <option value="Callirrhoe">Callirrhoe — descontraída</option>
+          <option value="Despina">Despina</option>
+          <option value="Achernar">Achernar</option>
+        </select>
+        <div style="margin-top:14px">
+          <label><input id="wifiEnabled" type="checkbox"> Wi-Fi Habilitado</label>
+          <label><input id="webEnabled" type="checkbox"> Web UI Habilitada</label>
+          <label><input id="geminiEnabled" type="checkbox"> Gemini Habilitado</label>
+          <label><input id="gatewayEnabled" type="checkbox"> Gateway Habilitado</label>
+        </div>
+      </section>
+
+      <!-- Áudio & VAD -->
+      <section class="card card-full">
+        <h3>Áudio & Detecção de Fala (VAD)</h3>
+        <div class="row">
+          <div>
+            <label>Volume do Alto-falante: <span id="spkVolLabel">200</span> / 255</label>
+            <input id="speakerVolume" type="range" min="0" max="255" step="1" oninput="spkVolLabel.textContent=this.value">
+            <label>Ganho do Microfone: <span id="micMagLabel">16</span> / 24</label>
+            <input id="micMagnification" type="range" min="1" max="24" step="1" oninput="micMagLabel.textContent=this.value">
+            <label>Filtro de Ruído Mic: <span id="micNoiseLabel">0</span> / 4</label>
+            <input id="micNoiseFilter" type="range" min="0" max="4" step="1" oninput="micNoiseLabel.textContent=this.value">
+          </div>
+          <div>
+            <label>Buffer Pré-fala (VAD Prefix): <span id="vadPreLabel">800</span> ms</label>
+            <input id="vadPrefixPadding" type="range" min="0" max="2000" step="100" oninput="vadPreLabel.textContent=this.value">
+            <label>Duração do Silêncio (VAD Silence): <span id="vadSilLabel">900</span> ms</label>
+            <input id="vadSilenceDuration" type="range" min="100" max="3000" step="100" oninput="vadSilLabel.textContent=this.value">
+            <div style="margin-top:14px">
+              <label><input id="vadStartSensitivityHigh" type="checkbox"> Sensibilidade inicial alta</label>
+              <label><input id="vadEndSensitivityLow" type="checkbox"> Sensibilidade final baixa</label>
+              <label><input id="vadTurnIncludesAllInput" type="checkbox"> Turno inclui áudio completo</label>
+            </div>
+          </div>
+        </div>
+        <div class="btn-bar">
+          <button onclick="saveRuntime(false)" class="btn-primary">Salvar Configurações</button>
+          <button onclick="saveRuntime(true)" class="btn-danger">Salvar e Reiniciar</button>
+          <button onclick="loadRuntime()" class="btn-sec">Recarregar</button>
+        </div>
+      </section>
+
+      <!-- Segredos (Protegidos) -->
+      <section class="card card-full">
+        <h3>Segredos & Chaves Privadas (Protegidos)</h3>
+        <p class="sub">Chaves salvas nunca são expostas. Deixe o campo em branco para manter a chave atual.</p>
+        <div class="row">
+          <div>
+            <label>Gemini API Key</label>
+            <input id="geminiKey" type="password" placeholder="•••••••••••••• (chave atual preservada)">
+            <label>Senha Wi-Fi</label>
+            <input id="wifiPassword" type="password" placeholder="•••••••••••••• (senha atual preservada)">
+          </div>
+          <div>
+            <label>Google Calendar URL (.ics)</label>
+            <input id="calendarUrl" type="password" placeholder="•••••••••••••• (URL atual preservada)">
+            <label>Gateway Token</label>
+            <input id="gatewayToken" type="password" placeholder="•••••••••••••• (token atual preservado)">
+          </div>
+        </div>
+        <div class="btn-bar">
+          <button onclick="saveSecrets()" class="btn-danger">Salvar Segredos</button>
+        </div>
+      </section>
+
+      <!-- Segurança Web & Prompts -->
+      <section class="card">
+        <h3>Segurança Web</h3>
+        <p class="sub">Acesso protegido por autenticação HTTP Basic (usuário <code>stackchan</code>).</p>
+        <label>Nova Senha Web</label>
+        <input id="webPassword" type="password" placeholder="mínimo 8 caracteres">
+        <div class="btn-bar">
+          <button onclick="saveWebPassword()" class="btn-sec">Definir Senha Web</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Prompts Adicionais (Overlay)</h3>
+        <label>System Overlay</label>
+        <textarea id="systemPrompt"></textarea>
+        <label>Persona Overlay</label>
+        <textarea id="personaPrompt"></textarea>
+        <div class="btn-bar">
+          <button onclick="savePrompts()" class="btn-primary">Salvar Prompts</button>
+          <button onclick="loadPrompts()" class="btn-sec">Recarregar</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- TAB: MEMÓRIA -->
+  <main id="view-memory" class="view">
+    <div class="card card-full">
+      <h3>Memória Persistente da Pix (Memory V2)</h3>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <span id="memCountBadge" class="badge badge-blue">0 fatos</span>
+        <span id="memTruncatedBadge" class="badge badge-amber" style="display:none">Limite de 100 fatos atingido</span>
+        <button onclick="loadFacts()" class="btn-sec" style="margin-left:auto">Atualizar Lista</button>
+      </div>
+
+      <!-- Barra de Filtros Client-side -->
+      <div class="row" style="margin-bottom:12px">
+        <div>
+          <label>Filtro por Palavra-chave ou Chave (Key)</label>
+          <input id="factSearch" placeholder="Ex: nome, trabalho, Chile, viagem..." oninput="renderFacts()">
+        </div>
+        <div class="row">
+          <div>
+            <label>Categoria</label>
+            <select id="factCategoryFilter" onchange="renderFacts()">
+              <option value="">Todas as Categorias</option>
+              <option value="identity">identity</option>
+              <option value="profile">profile</option>
+              <option value="work">work</option>
+              <option value="relationship">relationship</option>
+              <option value="travel">travel</option>
+              <option value="project">project</option>
+              <option value="plan">plan</option>
+              <option value="preference">preference</option>
+              <option value="temporary">temporary</option>
+              <option value="other">other</option>
+            </select>
+          </div>
+          <div>
+            <label>Ordenação</label>
+            <select id="factSort" onchange="renderFacts()">
+              <option value="recency_desc">Mais recentes primeiro</option>
+              <option value="recency_asc">Mais antigos primeiro</option>
+              <option value="importance_desc">Maior importância (3 → 1)</option>
+              <option value="importance_asc">Menor importância (1 → 3)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Lista de Fatos -->
+      <div id="factsContainer">Carregando fatos...</div>
+    </div>
+  </main>
+
+  <footer>
+    <a href="/sensors">📊 Ver Sensores em Tempo Real (Painel Técnico /sensors)</a>
+    <div style="margin-top:6px">StackChan CoreS3 • Firmware Gemini Live</div>
   </footer>
+
 <script>
+let g_facts = [];
+let pollTimer = null;
+
 async function jget(u){const r=await fetch(u);return r.json()}
 async function jpost(u,o){const r=await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(o)});return r.json()}
-function show(id,o){document.getElementById(id).textContent=typeof o==='string'?o:JSON.stringify(o,null,2)}
-function openTab(name){document.querySelectorAll('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===name));document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',(b.getAttribute('onclick')||'').indexOf("'"+name+"'")>=0))}
-async function loadStatus(){const s=await jget('/api/status');show('status',s);if(s&&s.formatted_datetime){const el=document.getElementById('deviceDateTime');if(el)el.textContent=s.formatted_datetime;}}
-async function voiceToggle(){show('status',await jpost('/api/voice/toggle',{}));setTimeout(loadStatus,700)}
-async function loadRuntime(){const c=await jget('/api/runtime');robotId.value=c.robot_id||'stackchan';geminiModel.value=c.gemini_model||'';geminiVoice.value=c.gemini_voice||'Aoede';timezoneOffset.value=c.timezone_offset!==undefined?String(c.timezone_offset):"-3";wifiSsid.value='';wifiSsid.placeholder=c.wifi_ssid==='set'?'SSID is already stored; leave empty to keep it':'enter SSID';gatewayUrl.value=c.gateway_base_url||'';speakerVolume.value=c.speaker_volume||200;speakerVolumeLabel.textContent=speakerVolume.value;micMagnification.value=c.mic_magnification||16;micMagnificationLabel.textContent=micMagnification.value;micNoiseFilter.value=c.mic_noise_filter_level||0;micNoiseFilterLabel.textContent=micNoiseFilter.value;vadPrefixPadding.value=c.vad_prefix_padding_ms||300;vadPrefixPaddingLabel.textContent=vadPrefixPadding.value;vadSilenceDuration.value=c.vad_silence_duration_ms||350;vadSilenceDurationLabel.textContent=vadSilenceDuration.value;vadStartSensitivityHigh.checked=c.vad_start_sensitivity_high!==false;vadEndSensitivityLow.checked=c.vad_end_sensitivity_low===true;vadTurnIncludesAllInput.checked=c.vad_turn_includes_all_input!==false;const firstSetup=(c.wifi_ssid!=='set'&&c.wifi_password!=='set');wifiEnabled.checked=firstSetup?true:!!c.wifi_enabled;webEnabled.checked=firstSetup?true:!!c.web_enabled;geminiEnabled.checked=!!c.gemini_enabled;gatewayEnabled.checked=!!c.gateway_enabled;show('status',c)}
-async function saveRuntime(reboot){show('status',await jpost('/api/runtime',{robot_id:robotId.value,gemini_model:geminiModel.value,gemini_voice:geminiVoice.value,timezone_offset:Number(timezoneOffset.value),wifi_ssid:wifiSsid.value,gateway_base_url:gatewayUrl.value,speaker_volume:Number(speakerVolume.value),mic_magnification:Number(micMagnification.value),mic_noise_filter_level:Number(micNoiseFilter.value),vad_prefix_padding_ms:Number(vadPrefixPadding.value),vad_silence_duration_ms:Number(vadSilenceDuration.value),vad_start_sensitivity_high:vadStartSensitivityHigh.checked,vad_end_sensitivity_low:vadEndSensitivityLow.checked,vad_turn_includes_all_input:vadTurnIncludesAllInput.checked,wifi_enabled:wifiEnabled.checked,web_enabled:webEnabled.checked,gemini_enabled:geminiEnabled.checked,gateway_enabled:gatewayEnabled.checked,reboot:!!reboot}))}
-async function loadConfig(){await loadRuntime()}
-async function saveConfig(){await saveRuntime()}
-async function saveSecrets(){show('status',await jpost('/api/secrets',{gemini_api_key:geminiKey.value,gateway_token:gatewayToken.value,wifi_password:wifiPassword.value,calendar_url:calendarUrl.value}));geminiKey.value='';gatewayToken.value='';wifiPassword.value='';calendarUrl.value=''}
-async function saveWebPassword(){show('status',await jpost('/api/security',{web_password:webPassword.value}));webPassword.value=''}
-async function loadPrompts(){const p=await jget('/api/prompts');systemPrompt.value=p.system_prompt||'';personaPrompt.value=p.persona_prompt||''}
-async function savePrompts(){show('status',await jpost('/api/prompts',{system_prompt:systemPrompt.value,persona_prompt:personaPrompt.value}))}
-async function loadSummaryConfig(){const c=await jget('/api/memory/summary-config');summaryModel.value=c.model||'gemini-flash-latest'}
-async function saveSummaryConfig(){show('memory',await jpost('/api/memory/summary-config',{model:summaryModel.value}))}
-async function loadMemory(){const d=await jget('/api/memory/recent');const chars=(d.stats&&d.stats.active_context_chars!==undefined)?d.stats.active_context_chars:'?';show('memory','Active context chars: '+chars+'\n\n[Runtime context preview]\n'+(d.context_preview||'')+'\n\n[Active recent dialogues]\n'+(d.active_context_preview||'(empty after summarization)'))}
-async function loadDialogues(){const d=await jget('/api/memory/dialogues');show('memory',d.dialogues_preview||JSON.stringify(d,null,2))}
-async function loadSummaries(){const d=await jget('/api/memory/summaries');show('memory',d.summaries_preview||JSON.stringify(d,null,2))}
-async function searchMemory(){show('memory',await jpost('/api/memory/search',{query:memoryQuery.value}))}
-async function loadMemoryStats(){show('memory',await jget('/api/memory/stats'))}
-async function runSummarize(){show('memory',await jpost('/api/memory/summarize',{model:summaryModel.value}))}
-async function runVectorize(){show('memory',await jpost('/api/memory/vectorize',{}))}
-async function loadTools(){show('tools',await jget('/api/gateway/tools'))}
-loadStatus();loadRuntime();loadPrompts();loadSummaryConfig();
+
+function openTab(name){
+  document.querySelectorAll('.tab').forEach((b,i)=>{
+    b.classList.toggle('active', ['status','config','memory'][i]===name);
+  });
+  document.querySelectorAll('.view').forEach(v=>{
+    v.classList.toggle('active', v.id==='view-'+name);
+  });
+  if(name==='memory' && g_facts.length===0) loadFacts();
+}
+
+function notify(text, ok){
+  const el = document.getElementById('cfgFeedback');
+  el.textContent = text;
+  el.className = 'feedback ' + (ok ? 'ok' : 'err');
+  setTimeout(()=>{ el.className = 'feedback'; }, 4000);
+}
+
+function fmtUptime(sec){
+  if(!sec) return '0s';
+  const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
+  return (h>0?h+'h ':'')+(m>0?m+'m ':'')+s+'s';
+}
+
+function badgeClassForCategory(cat){
+  if(['identity','profile','work','relationship'].includes(cat)) return 'badge-blue';
+  if(['travel','project','plan'].includes(cat)) return 'badge-green';
+  if(cat==='preference') return 'badge-purple';
+  if(cat==='temporary') return 'badge-amber';
+  return 'badge-gray';
+}
+
+function importanceLabel(imp){
+  if(imp===3) return '<span class="badge badge-amber">Alta ★★★</span>';
+  if(imp===1) return '<span class="badge badge-gray">Baixa ★</span>';
+  return '<span class="badge badge-blue">Normal ★★</span>';
+}
+
+async function loadStatus(){
+  try{
+    const s = await jget('/api/status');
+    if(!s || !s.ok) return;
+
+    // Header & Datetime
+    if(s.formatted_datetime) document.getElementById('deviceDateTime').textContent = s.formatted_datetime;
+    document.getElementById('lastUpdatedStatus').textContent = 'Última atualização: ' + new Date().toLocaleTimeString();
+
+    // Wi-Fi
+    const wOk = !!s.wifi_connected;
+    document.getElementById('stWifi').innerHTML = wOk ? '<span class="badge badge-green">Conectado</span>' : '<span class="badge badge-red">Desconectado</span>';
+    document.getElementById('stIp').textContent = s.wifi_ip || '--';
+    document.getElementById('stRssi').textContent = wOk ? (s.wifi_rssi + ' dBm') : '--';
+    document.getElementById('stUptime').textContent = fmtUptime(s.uptime_sec);
+
+    // Gemini
+    const g = s.gemini || {};
+    document.getElementById('stGeminiConn').innerHTML = g.ready ? '<span class="badge badge-green">Pronto</span>' : (g.connected ? '<span class="badge badge-amber">Conectado</span>' : '<span class="badge badge-gray">Desconectado</span>');
+    const tState = g.turn_state || 'IDLE';
+    let tBadge = 'badge-gray';
+    if(tState==='LISTENING') tBadge = 'badge-green';
+    else if(tState==='SPEAKING') tBadge = 'badge-blue';
+    else if(tState==='WAITING_MODEL'||tState==='TOOL_CALL') tBadge = 'badge-amber';
+    document.getElementById('stTurnState').innerHTML = `<span class="badge ${tBadge}">${tState}</span>`;
+    document.getElementById('stMic').innerHTML = (s.mic && s.mic.running) ? '<span class="badge badge-green">Ativo</span>' : '<span class="badge badge-gray">Inativo</span>';
+    document.getElementById('stSpk').innerHTML = g.speaking ? '<span class="badge badge-blue">Falando</span>' : '<span class="badge badge-gray">Ocioso</span>';
+    document.getElementById('stEmotion').textContent = s.emotion || 'neutral';
+
+    // Sensores ToF & Ambiente
+    const sens = s.sensors || {};
+    document.getElementById('stTofPresent').innerHTML = sens.tof_present ? '<span class="badge badge-green">Detectada</span>' : '<span class="badge badge-gray">Livre</span>';
+    document.getElementById('stTofDist').textContent = (sens.tof_distance_mm !== undefined) ? (sens.tof_distance_mm + ' mm') : '--';
+    document.getElementById('stTemp').textContent = (sens.temperature_c !== undefined) ? (sens.temperature_c.toFixed(1) + ' °C') : '--';
+    document.getElementById('stHum').textContent = (sens.humidity_pct !== undefined) ? (sens.humidity_pct.toFixed(1) + ' %') : '--';
+    document.getElementById('stPress').textContent = (sens.pressure_hpa !== undefined) ? (sens.pressure_hpa.toFixed(0) + ' hPa') : '--';
+
+    // Sistema
+    const mv = s.battery_mv || 0, ma = s.battery_ma || 0;
+    document.getElementById('stBat').textContent = `${(mv/1000).toFixed(2)} V (${ma} mA)`;
+    document.getElementById('stHeap').textContent = s.free_heap ? Math.round(s.free_heap/1024) + ' KB' : '--';
+    document.getElementById('stMaxAlloc').textContent = s.max_alloc_heap ? Math.round(s.max_alloc_heap/1024) + ' KB' : '--';
+    document.getElementById('stPsram').textContent = s.psram_free ? Math.round(s.psram_free/1024) + ' KB' : '--';
+
+    // Agenda & Feeds
+    const cal = s.calendar || {};
+    document.getElementById('stCal').textContent = `${cal.cached_count || 0} eventos em cache`;
+    document.getElementById('stCalValid').innerHTML = cal.is_valid_today ? '<span class="badge badge-green">Válida hoje</span>' : '<span class="badge badge-amber">Pendente/Antiga</span>';
+    document.getElementById('stCalUpdating').innerHTML = cal.is_updating ? '<span class="badge badge-amber">Sincronizando...</span>' : '<span class="badge badge-gray">Ocioso</span>';
+
+    const f = s.feeds || {};
+    document.getElementById('stUsd').textContent = f.usd_brl ? ('R$ ' + f.usd_brl) : '--';
+    document.getElementById('stNews').textContent = `${f.news_count || 0} notícias`;
+    document.getElementById('stHeadline').textContent = f.news_headline || '(sem manchete)';
+    document.getElementById('stHeadline').title = f.news_headline || '';
+  }catch(e){
+    console.error('Status poll error:', e);
+  }
+}
+
+function startPolling(){
+  if(!pollTimer){
+    loadStatus();
+    pollTimer = setInterval(loadStatus, 5000);
+  }
+}
+function stopPolling(){
+  if(pollTimer){
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) stopPolling();
+  else startPolling();
+});
+
+// CONFIGURAÇÃO
+async function loadRuntime(){
+  try{
+    const c = await jget('/api/runtime');
+    robotId.value = c.robot_id || 'stackchan';
+    geminiModel.value = c.gemini_model || '';
+    geminiVoice.value = c.gemini_voice || 'Puck';
+    timezoneOffset.value = c.timezone_offset !== undefined ? String(c.timezone_offset) : "-3";
+    wifiSsid.value = '';
+    wifiSsid.placeholder = (c.wifi_ssid === 'set') ? 'SSID armazenado; deixe vazio para manter' : 'digite o SSID';
+    gatewayUrl.value = c.gateway_base_url || '';
+    speakerVolume.value = c.speaker_volume || 200;
+    spkVolLabel.textContent = speakerVolume.value;
+    micMagnification.value = c.mic_magnification || 16;
+    micMagLabel.textContent = micMagnification.value;
+    micNoiseFilter.value = c.mic_noise_filter_level || 0;
+    micNoiseLabel.textContent = micNoiseFilter.value;
+    vadPrefixPadding.value = c.vad_prefix_padding_ms || 800;
+    vadPreLabel.textContent = vadPrefixPadding.value;
+    vadSilenceDuration.value = c.vad_silence_duration_ms || 900;
+    vadSilLabel.textContent = vadSilenceDuration.value;
+    vadStartSensitivityHigh.checked = (c.vad_start_sensitivity_high !== false);
+    vadEndSensitivityLow.checked = (c.vad_end_sensitivity_low === true);
+    vadTurnIncludesAllInput.checked = (c.vad_turn_includes_all_input !== false);
+    wifiEnabled.checked = !!c.wifi_enabled;
+    webEnabled.checked = !!c.web_enabled;
+    geminiEnabled.checked = !!c.gemini_enabled;
+    gatewayEnabled.checked = !!c.gateway_enabled;
+    notify('Configurações carregadas com sucesso.', true);
+  }catch(e){
+    notify('Erro ao carregar configurações: ' + e, false);
+  }
+}
+
+async function saveRuntime(reboot){
+  try{
+    const res = await jpost('/api/runtime', {
+      robot_id: robotId.value,
+      gemini_model: geminiModel.value,
+      gemini_voice: geminiVoice.value,
+      timezone_offset: Number(timezoneOffset.value),
+      wifi_ssid: wifiSsid.value,
+      gateway_base_url: gatewayUrl.value,
+      speaker_volume: Number(speakerVolume.value),
+      mic_magnification: Number(micMagnification.value),
+      mic_noise_filter_level: Number(micNoiseFilter.value),
+      vad_prefix_padding_ms: Number(vadPrefixPadding.value),
+      vad_silence_duration_ms: Number(vadSilenceDuration.value),
+      vad_start_sensitivity_high: vadStartSensitivityHigh.checked,
+      vad_end_sensitivity_low: vadEndSensitivityLow.checked,
+      vad_turn_includes_all_input: vadTurnIncludesAllInput.checked,
+      wifi_enabled: wifiEnabled.checked,
+      web_enabled: webEnabled.checked,
+      gemini_enabled: geminiEnabled.checked,
+      gateway_enabled: gatewayEnabled.checked,
+      reboot: !!reboot
+    });
+    notify(reboot ? 'Configurações salvas. Reiniciando a Pix...' : 'Configurações salvas no SD.', res.ok);
+  }catch(e){
+    notify('Erro ao salvar runtime: ' + e, false);
+  }
+}
+
+async function saveSecrets(){
+  try{
+    const res = await jpost('/api/secrets', {
+      gemini_api_key: geminiKey.value,
+      gateway_token: gatewayToken.value,
+      wifi_password: wifiPassword.value,
+      calendar_url: calendarUrl.value
+    });
+    geminiKey.value = '';
+    gatewayToken.value = '';
+    wifiPassword.value = '';
+    calendarUrl.value = '';
+    notify('Segredos atualizados com sucesso.', res.ok);
+  }catch(e){
+    notify('Erro ao salvar segredos: ' + e, false);
+  }
+}
+
+async function saveWebPassword(){
+  try{
+    const res = await jpost('/api/security', { web_password: webPassword.value });
+    webPassword.value = '';
+    notify(res.ok ? 'Senha web definida com sucesso.' : 'Erro ao definir senha: ' + (res.error||'falha'), res.ok);
+  }catch(e){
+    notify('Erro ao salvar senha web: ' + e, false);
+  }
+}
+
+async function loadPrompts(){
+  try{
+    const p = await jget('/api/prompts');
+    systemPrompt.value = p.system_prompt || '';
+    personaPrompt.value = p.persona_prompt || '';
+  }catch(e){}
+}
+
+async function savePrompts(){
+  try{
+    const res = await jpost('/api/prompts', {
+      system_prompt: systemPrompt.value,
+      persona_prompt: personaPrompt.value
+    });
+    notify('Prompts overlay salvos.', res.ok);
+  }catch(e){
+    notify('Erro ao salvar prompts: ' + e, false);
+  }
+}
+
+// MEMÓRIA (READ-ONLY)
+async function loadFacts(){
+  const container = document.getElementById('factsContainer');
+  container.innerHTML = '<span class="sub">Carregando fatos da Pix...</span>';
+  try{
+    const d = await jget('/api/memory/facts');
+    if(!d || !d.ok){
+      container.innerHTML = '<span style="color:var(--red)">Erro ao carregar fatos.</span>';
+      return;
+    }
+    g_facts = d.facts || [];
+    document.getElementById('memCountBadge').textContent = `${g_facts.length} fatos`;
+    const truncBadge = document.getElementById('memTruncatedBadge');
+    if(d.truncated){
+      truncBadge.style.display = 'inline-block';
+      truncBadge.textContent = 'Limite de 100 fatos atingido';
+    }else{
+      truncBadge.style.display = 'none';
+    }
+    renderFacts();
+  }catch(e){
+    container.innerHTML = '<span style="color:var(--red)">Falha de conexão: ' + e + '</span>';
+  }
+}
+
+function renderFacts(){
+  const container = document.getElementById('factsContainer');
+  const q = (document.getElementById('factSearch').value || '').trim().toLowerCase();
+  const cat = document.getElementById('factCategoryFilter').value;
+  const sort = document.getElementById('factSort').value;
+
+  // Filter
+  let filtered = g_facts.map((f,idx)=>({...f, _origIndex: idx})).filter(f=>{
+    if(cat && f.category !== cat) return false;
+    if(q){
+      const matchKey = (f.key || '').toLowerCase().includes(q);
+      const matchText = (f.text || '').toLowerCase().includes(q);
+      if(!matchKey && !matchText) return false;
+    }
+    return true;
+  });
+
+  // Sort
+  if(sort==='recency_desc'){
+    filtered.sort((a,b)=> a._origIndex - b._origIndex);
+  }else if(sort==='recency_asc'){
+    filtered.sort((a,b)=> b._origIndex - a._origIndex);
+  }else if(sort==='importance_desc'){
+    filtered.sort((a,b)=> (b.importance||2) - (a.importance||2) || (a._origIndex - b._origIndex));
+  }else if(sort==='importance_asc'){
+    filtered.sort((a,b)=> (a.importance||2) - (b.importance||2) || (a._origIndex - b._origIndex));
+  }
+
+  if(filtered.length === 0){
+    container.innerHTML = '<div style="text-align:center;padding:24px;color:var(--muted)">Nenhum fato encontrado para os filtros selecionados.</div>';
+    return;
+  }
+
+  container.innerHTML = filtered.map(f=>{
+    const cBadge = badgeClassForCategory(f.category);
+    const impHtml = importanceLabel(f.importance || 2);
+    const tsHtml = f.ts ? `<span class="fact-ts">${f.ts}</span>` : '';
+    const keyHtml = f.key ? `<span class="fact-key">[${f.key}]</span>` : '';
+    return `
+      <div class="fact-card">
+        <div class="fact-header">
+          ${keyHtml}
+          <span class="badge ${cBadge}">${f.category || 'general'}</span>
+          ${impHtml}
+          ${tsHtml}
+        </div>
+        <div class="fact-text">${f.text || ''}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+// Inicialização
+startPolling();
+loadRuntime();
+loadPrompts();
 </script>
 </body>
 </html>
@@ -321,11 +909,46 @@ void WebConfigServer::registerRoutes() {
   server_.on("/api/secrets", HTTP_POST, [this]() { if (requireAuth()) handleSecretSave(); });
   server_.on("/api/prompts", HTTP_GET, [this]() { if (requireAuth()) handlePromptsGet(); });
   server_.on("/api/prompts", HTTP_POST, [this]() { if (requireAuth()) handlePromptsSave(); });
+  server_.on("/api/memory/facts", HTTP_GET, [this]() { if (requireAuth()) handleMemoryFacts(); });
   server_.on("/api/memory/recent", HTTP_GET, [this]() { if (requireAuth()) handleMemoryRecent(); });
   server_.on("/api/memory/dialogues", HTTP_GET, [this]() { if (requireAuth()) handleMemoryDialogues(); });
   server_.on("/api/memory/summaries", HTTP_GET, [this]() { if (requireAuth()) handleMemorySummaries(); });
   server_.on("/api/memory/search", HTTP_GET, [this]() { if (requireAuth()) handleMemorySearch(); });
   server_.on("/api/memory/search", HTTP_POST, [this]() { if (requireAuth()) handleMemorySearch(); });
+  server_.on("/api/memory/fact", HTTP_POST, [this]() {
+    if (!requireAuth()) return;
+    JsonDocument in;
+    DeserializationError err = deserializeJson(in, readBody());
+    if (err) {
+      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"invalid_json\"}");
+      return;
+    }
+    String fact = String((const char*)(in["fact"] | ""));
+    String key = String((const char*)(in["key"] | ""));
+    String category = String((const char*)(in["category"] | "general"));
+    uint8_t importance = (uint8_t)(in["importance"] | 2);
+    auto res = memory_.saveFact(fact, key, category, importance);
+    JsonDocument out;
+    out["ok"] = res.ok;
+    out["updated"] = res.updated;
+    out["already_known"] = res.alreadyKnown;
+    out["key"] = res.key;
+    out["fact"] = res.fact;
+    out["importance"] = importance;
+    out["message"] = res.message;
+    sendJson(res.ok ? 200 : 500, out);
+  });
+  server_.on("/api/memory/preview", HTTP_GET, [this]() {
+    if (!requireAuth()) return;
+    size_t maxChars = server_.hasArg("max_chars") ? server_.arg("max_chars").toInt() : 1500;
+    String preview = memory_.factsPreview(maxChars);
+    JsonDocument out;
+    out["ok"] = true;
+    out["length"] = preview.length();
+    out["max_chars"] = maxChars;
+    out["preview"] = preview;
+    sendJson(200, out);
+  });
   server_.on("/api/memory/stats", HTTP_GET, [this]() { if (requireAuth()) handleMemoryStats(); });
   server_.on("/api/memory/summary-config", HTTP_GET, [this]() { if (requireAuth()) handleMemorySummaryConfigGet(); });
   server_.on("/api/memory/summary-config", HTTP_POST, [this]() { if (requireAuth()) handleMemorySummaryConfigSave(); });
@@ -357,13 +980,27 @@ void WebConfigServer::registerRoutes() {
   });
   server_.on("/api/calendar/refresh", HTTP_GET, [this]() {
     if (!requireAuth()) return;
-    googleCalendar.prefetch(true);
-    server_.send(200, "application/json", googleCalendar.fetchDailyAgendaJson());
+    googleCalendar.requestRefresh();
+    liveFeeds.requestCalendarRefresh();
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["status"] = "refresh_requested";
+    doc["message"] = "Sincronizacao da agenda enfileirada em background.";
+    String out;
+    serializeJson(doc, out);
+    server_.send(200, "application/json", out);
   });
   server_.on("/api/calendar/refresh", HTTP_POST, [this]() {
     if (!requireAuth()) return;
-    googleCalendar.prefetch(true);
-    server_.send(200, "application/json", googleCalendar.fetchDailyAgendaJson());
+    googleCalendar.requestRefresh();
+    liveFeeds.requestCalendarRefresh();
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["status"] = "refresh_requested";
+    doc["message"] = "Sincronizacao da agenda enfileirada em background.";
+    String out;
+    serializeJson(doc, out);
+    server_.send(200, "application/json", out);
   });
   server_.onNotFound([this]() { if (requireAuth()) handleNotFound(); });
 }
@@ -483,14 +1120,22 @@ void WebConfigServer::handleStatus() {
   doc["gateway_token"] = fileExists("/app/StackChan/secrets/gateway_token.txt") ? "set" : "missing";
   doc["calendar_url"] = fileExists("/app/StackChan/secrets/calendar_url.txt") ? "set" : "missing";
   doc["free_heap"] = ESP.getFreeHeap();
+  doc["max_alloc_heap"] = ESP.getMaxAllocHeap();
   doc["psram_free"] = ESP.getFreePsram();
+  doc["uptime_sec"] = millis() / 1000;
   doc["battery_mv"] = M5StackChan.getBatteryVoltage();
   doc["battery_ma"] = M5StackChan.getBatteryCurrent();
+  doc["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
   doc["wifi_ip"] = WiFi.localIP().toString();
+  doc["wifi_rssi"] = (WiFi.status() == WL_CONNECTED) ? WiFi.RSSI() : 0;
   doc["wifi_dns"] = WiFi.dnsIP().toString();
   doc["emotion"] = emotion_.currentEmotion();
   auto g = doc["gemini"].to<JsonObject>();
+  g["connected"] = gemini_.isConnected();
   g["ready"] = gemini_.isReady();
+  g["turn_state"] = gemini_.turnStateString();
+  g["mic_active"] = M5.Mic.isRunning();
+  g["speaker_active"] = gemini_.isSpeaking();
   g["recording"] = gemini_.isRecording();
   g["speaking"] = gemini_.isSpeaking();
   g["continuous"] = gemini_.continuousConversation();
@@ -523,6 +1168,26 @@ void WebConfigServer::handleStatus() {
   touch["front"] = intensities[0];
   touch["middle"] = intensities[1];
   touch["back"] = intensities[2];
+
+  auto sens = doc["sensors"].to<JsonObject>();
+  sens["tof_present"] = getCachedTofPresence();
+  sens["tof_distance_mm"] = getCachedTofDistanceMm();
+  sens["temperature_c"] = getCachedTemp();
+  sens["humidity_pct"] = getCachedHumidity();
+  sens["pressure_hpa"] = getCachedPressure();
+
+  auto cal = doc["calendar"].to<JsonObject>();
+  cal["cached_count"] = googleCalendar.cachedEventCount();
+  cal["has_cache"] = googleCalendar.hasCache();
+  cal["is_updating"] = googleCalendar.isInFlight();
+  cal["is_valid_today"] = googleCalendar.isCacheValidForToday();
+
+  auto feeds = doc["feeds"].to<JsonObject>();
+  auto snap = liveFeeds.getSnapshot();
+  feeds["usd_brl"] = snap.usdBrl;
+  feeds["news_count"] = snap.cachedNewsCount;
+  feeds["news_headline"] = snap.currentNewsHeadline;
+  feeds["is_updating"] = liveFeeds.isUpdating();
 
   time_t nowSec = time(nullptr);
   struct tm timeInfo {};
@@ -786,6 +1451,7 @@ void WebConfigServer::handleSecretSave() {
   }
   if (calendarUrl && strlen(calendarUrl) > 0) {
     wrote |= writeTextFile("/app/StackChan/secrets/calendar_url.txt", String(calendarUrl));
+    googleCalendar.refreshCachedUrl();
   }
   JsonDocument meta;
   meta["ts"] = millis();
@@ -833,6 +1499,10 @@ void WebConfigServer::handlePromptsSave() {
   out["ok"] = ok1 && ok2;
   out["applies"] = gemini_.isReady() ? "next_gemini_session_after_reconnect" : "next_gemini_session";
   sendJson(out["ok"] ? 200 : 500, out);
+}
+
+void WebConfigServer::handleMemoryFacts() {
+  server_.send(200, "application/json", memory_.exportFactsJson(100));
 }
 
 void WebConfigServer::handleMemoryRecent() {
