@@ -1462,10 +1462,9 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
                   static_cast<unsigned>(closeTh));
     local_gate_open_ = false;
     noise_gate_hangover_ = 0;
-    post_speech_silence_countdown_ = kPostSpeechSilenceChunks; // Commit silence to end turn
   }
 
-  // 3. Adaptive Gate Evaluation with Hysteresis
+  // 3. Adaptive Gate Evaluation with Hysteresis (for telemetry and inactivity deadline only)
   bool voiceActive = false;
   if (!local_gate_open_) {
     voiceActive = (last_mic_rms_ >= openTh);
@@ -1500,7 +1499,6 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
                     turnStateString());
     }
     noise_gate_hangover_ = kNoiseGateHangoverChunks;
-    post_speech_silence_countdown_ = kPostSpeechSilenceChunks;
   } else {
     if (local_gate_open_ && !gate_cross_down_logged_) {
       gate_cross_down_logged_ = true;
@@ -1518,6 +1516,21 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
     }
     if (noise_gate_hangover_ > 0) {
       --noise_gate_hangover_;
+    } else if (local_gate_open_) {
+      local_gate_open_ = false;
+      uint32_t gateDuration = millis() - gate_open_started_ms_;
+      Serial.printf("[DIAG:MIC_GATE] ts=%lu rms=%u peak=%u gate_open=0 event=GATE_CLOSED dur_ms=%lu real_chunks=%lu silence_chunks=%lu floor=%u mic_gain=%u filter=%u state=%s\n",
+                    millis(),
+                    static_cast<unsigned>(last_mic_rms_),
+                    static_cast<unsigned>(last_mic_peak_),
+                    static_cast<unsigned long>(gateDuration),
+                    static_cast<unsigned long>(gate_real_chunks_sent_),
+                    static_cast<unsigned long>(gate_silence_chunks_injected_),
+                    static_cast<unsigned>(noise_floor_rms_),
+                    static_cast<unsigned>(M5.Mic.config().magnification),
+                    static_cast<unsigned>(M5.Mic.config().noise_filter_level),
+                    turnStateString());
+      armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
     }
   }
 
@@ -1592,46 +1605,19 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
   }
 
   // Audio transmission logic:
-  if (voiceActive || noise_gate_hangover_ > 0) {
-    // User is speaking or within natural word-ending hangover: stream live audio
-    String audio_base64 = encodeBase64(reinterpret_cast<const uint8_t*>(rec_buf_), RT_REC_SAMPLES * sizeof(int16_t));
-    if (audio_base64.length()) {
-      sendRealtimeAudioBase64(audio_base64);
-      ++mic_chunks_sent_;
+  // Continuous PCM streaming: transmit PCM continuously to Gemini while conversation_armed_ and realtime_recording_ in LISTENING.
+  // The local noise gate is for telemetry only; Gemini cloud automaticActivityDetection handles speech_start and speech_end.
+  String audio_base64 = encodeBase64(reinterpret_cast<const uint8_t*>(rec_buf_), RT_REC_SAMPLES * sizeof(int16_t));
+  if (audio_base64.length()) {
+    sendRealtimeAudioBase64(audio_base64);
+    ++mic_chunks_sent_;
+    if (local_gate_open_) {
       ++gate_real_chunks_sent_;
-      if (!mic_ready_for_speech_) {
-        mic_ready_for_speech_ = true;
-        Serial.println("GeminiLive: mic ready for speech (noise gate open)");
-        if (emotion_ && realtime_recording_ && !speaking_) emotion_->setEmotion("listening");
-      }
     }
-  } else if (post_speech_silence_countdown_ > 0) {
-    // IMMEDIATE CONVERSATIONAL TURN COMPLETION:
-    // Speech just ended! Stream ~312ms (5 chunks) of PCM digital silence (zeros) to Gemini's server-side VAD.
-    // The server immediately detects silenceDurationMs, closes turn, and replies with virtually ZERO delay!
-    --post_speech_silence_countdown_;
-    static const int16_t s_silenceBuf[RT_REC_SAMPLES] = {0};
-    String silence_base64 = encodeBase64(reinterpret_cast<const uint8_t*>(s_silenceBuf), RT_REC_SAMPLES * sizeof(int16_t));
-    if (silence_base64.length()) {
-      sendRealtimeAudioBase64(silence_base64);
-      ++gate_silence_chunks_injected_;
-    }
-    if (post_speech_silence_countdown_ == 0) {
-      local_gate_open_ = false;
-      uint32_t gateDuration = millis() - gate_open_started_ms_;
-      Serial.printf("[DIAG:MIC_GATE] ts=%lu rms=%u peak=%u gate_open=0 event=GATE_CLOSED dur_ms=%lu real_chunks=%lu silence_chunks=%lu floor=%u mic_gain=%u filter=%u state=%s\n",
-                    millis(),
-                    static_cast<unsigned>(last_mic_rms_),
-                    static_cast<unsigned>(last_mic_peak_),
-                    static_cast<unsigned long>(gateDuration),
-                    static_cast<unsigned long>(gate_real_chunks_sent_),
-                    static_cast<unsigned long>(gate_silence_chunks_injected_),
-                    static_cast<unsigned>(noise_floor_rms_),
-                    static_cast<unsigned>(M5.Mic.config().magnification),
-                    static_cast<unsigned>(M5.Mic.config().noise_filter_level),
-                    turnStateString());
-      // Refresh armed inactivity deadline to exactly 15s after speech finishes
-      armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
+    if (!mic_ready_for_speech_) {
+      mic_ready_for_speech_ = true;
+      Serial.println("GeminiLive: mic ready for speech (continuous streaming active)");
+      if (emotion_ && realtime_recording_ && !speaking_) emotion_->setEmotion("listening");
     }
   }
 
