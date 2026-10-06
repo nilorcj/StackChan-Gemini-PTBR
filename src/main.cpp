@@ -809,6 +809,26 @@ void setup() {
 #endif
     bool runtime_config_exists = SD.exists("/app/StackChan/config/runtime.json");
     Serial.printf("ConfigManager init: %s\n", cfg_ok ? "ok" : "failed");
+    // Step 4: Temporarily disable calendar network fetch by preserving URL to .bak and emptying file
+    if (SD.exists("/app/StackChan/secrets/calendar_url.txt")) {
+      File fCur = SD.open("/app/StackChan/secrets/calendar_url.txt", FILE_READ);
+      if (fCur && fCur.size() > 0) {
+        String existingUrl = fCur.readString();
+        fCur.close();
+        File fBak = SD.open("/app/StackChan/secrets/calendar_url.txt.bak", FILE_WRITE);
+        if (fBak) {
+          fBak.print(existingUrl);
+          fBak.close();
+        }
+        File fEmpty = SD.open("/app/StackChan/secrets/calendar_url.txt", FILE_WRITE);
+        if (fEmpty) {
+          fEmpty.close();
+          Serial.println("[GoogleCalendar] calendar_url.txt backed up to .bak and emptied for recovery.");
+        }
+      } else if (fCur) {
+        fCur.close();
+      }
+    }
     ConfigManager::applyTimezone(configManager.config().timezoneOffset);
     googleCalendar.refreshCachedUrl();
     if (M5.Rtc.isEnabled()) {
@@ -1452,12 +1472,11 @@ void loop() {
       }
       // Prioridade 4: Conversa Ativa / Microfone já gravando (isRecording)
       else if (gemini.isRecording()) {
-        Serial.println("Action: Conversa já ativa -> feedback visual (smile + nod)");
+        Serial.println("Action: Conversa já ativa -> renovação de escuta (feedback visual discreto)");
         g_last_human_activity_ms = now;
         emotion.setEmotion("happy");
         g_emotion_override_until_ms = now + 2000;
-        unitPaHub.click();
-        servoGestures.queueGesture("nod_yes");
+        gemini.armConversation("FAST_GESTURE");
         g_behaviorManager.onEvent(BehaviorEvent::WAVE, now);
       }
       // Prioridade 5: Gesto válido para abrir conversa!

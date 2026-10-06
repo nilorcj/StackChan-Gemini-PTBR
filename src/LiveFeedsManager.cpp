@@ -1,6 +1,7 @@
 #include "LiveFeedsManager.h"
 #include "GeminiLiveProbe.h"
 #include "GoogleCalendarClient.h"
+#include "TlsArbiter.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -283,6 +284,7 @@ LiveFeedsManager::DreamCardData LiveFeedsManager::getDreamCard(uint8_t index) co
 
 bool LiveFeedsManager::canStartRequest() const {
   if (WiFi.status() != WL_CONNECTED) return false;
+  if (TlsArbiter::instance().isGeminiActive()) return false;
   if (gemini_ && gemini_->isConnectingOrHandshaking()) return false;
   if (bootPrefetchActive_.load(std::memory_order_acquire)) return true;
   // Core 1 loopTask evaluates system idle state (IDLE or Sleep; blocks on LISTENING, WAITING_MODEL, TOOL_CALL, SPEAKING)
@@ -292,6 +294,7 @@ bool LiveFeedsManager::canStartRequest() const {
 bool LiveFeedsManager::canStartCalendarFetch() const {
   if (WiFi.status() != WL_CONNECTED) return false;
   if (!systemIdle_.load(std::memory_order_acquire)) return false;
+  if (TlsArbiter::instance().isGeminiActive()) return false;
 
   if (gemini_) {
     if (gemini_->isSpeaking() || gemini_->isRecording() || gemini_->isTurnBusy()) return false;
@@ -317,6 +320,7 @@ bool LiveFeedsManager::canStartCalendarFetch() const {
 bool LiveFeedsManager::canContinueCalendarFetch() const {
   if (WiFi.status() != WL_CONNECTED) return false;
   if (!systemIdle_.load(std::memory_order_acquire)) return false;
+  if (TlsArbiter::instance().isGeminiActive()) return false;
 
   if (gemini_) {
     if (gemini_->isSpeaking() || gemini_->isRecording() || gemini_->isTurnBusy()) return false;
@@ -329,6 +333,12 @@ bool LiveFeedsManager::canContinueCalendarFetch() const {
 
 void LiveFeedsManager::executeCalendarFetch() {
   if (!calendar_) return;
+
+  TlsFeedsGuard tlsGuard;
+  if (!tlsGuard.isAcquired()) {
+    calendarNextRetryMs_ = millis() + kCalendarFailureBackoffMs;
+    return;
+  }
 
   RequestInFlightGuard guard(requestInFlight_);
   calendarJobInFlight_.store(true, std::memory_order_release);
@@ -371,7 +381,7 @@ void LiveFeedsManager::workerTaskThunk(void* param) {
 
 void LiveFeedsManager::workerTaskLoop() {
   while (true) {
-    vTaskDelay(pdMS_TO_TICKS(100));
+    vTaskDelay(pdMS_TO_TICKS(1000));
 
     if (WiFi.status() != WL_CONNECTED) {
       continue;
@@ -595,6 +605,7 @@ void LiveFeedsManager::workerTaskLoop() {
 
 void LiveFeedsManager::fetchWeather(WeatherData& outWeather) {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (TlsArbiter::instance().isGeminiActive()) return;
   RequestInFlightGuard guard(requestInFlight_);
   HTTPClient http;
   http.setTimeout(kHttpTimeoutMs);
@@ -619,6 +630,7 @@ void LiveFeedsManager::fetchWeather(WeatherData& outWeather) {
 
 void LiveFeedsManager::fetchCurrency(char* outUsdBrl) {
   if (WiFi.status() != WL_CONNECTED) return;
+  if (TlsArbiter::instance().isGeminiActive()) return;
   RequestInFlightGuard guard(requestInFlight_);
   HTTPClient http;
   http.setTimeout(kHttpTimeoutMs);
@@ -870,6 +882,11 @@ class StatefulXmlStreamParser : public Stream {
 void LiveFeedsManager::fetchNews(NewsItem* outNews, uint8_t& outCount, char* outHeadline) {
   if (WiFi.status() != WL_CONNECTED) return;
 
+  TlsFeedsGuard tlsGuard;
+  if (!tlsGuard.isAcquired()) {
+    return;
+  }
+
   struct FeedDef {
     const char* url;
     const char* category;
@@ -889,7 +906,7 @@ void LiveFeedsManager::fetchNews(NewsItem* outNews, uint8_t& outCount, char* out
       Serial.println("[BOOT_PREFETCH] Deadline expired; breaking out of news feeds loop.");
       break;
     }
-    if (!canStartRequest()) {
+    if (TlsArbiter::instance().isGeminiPriorityPending() || !canStartRequest()) {
       Serial.println("[LiveFeedsWorker] News feed loop paused: Gemini active, avoiding concurrent TLS handshake");
       break;
     }

@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include <WebSocketsClient.h>
+#include "GeminiTransport.h"
 #include <ArduinoJson.h>
 #include <M5Unified.h>
 #include <M5StackChan.h>
@@ -146,7 +146,7 @@ class GeminiLiveProbe {
   float noiseFloorRms() const { return noise_floor_rms_; }
   void requestSessionEnd(const String& reason = "");
   void startRealtimeRecord();
-  void stopRealtimeRecord();
+  void stopRealtimeRecord(const char* reason = nullptr);
   void toggleRealtimeRecord();
 
   bool isDoNotDisturb() const { return dnd_until_ms_ > 0 && millis() < dnd_until_ms_; }
@@ -195,7 +195,8 @@ class GeminiLiveProbe {
   static constexpr uint8_t kNoiseGateHangoverChunks = 4; // ~250ms natural speech tail
   static constexpr uint8_t kPostSpeechSilenceChunks = 5; // ~312ms explicit digital silence to commit turn instantly
 
-  WebSocketsClient ws_;
+  GeminiTransport transport_;
+  uint32_t transport_epoch_ = 0;
   LiveTurnState turn_state_ = LiveTurnState::IDLE;
   I2SOwner i2s_owner_ = I2SOwner::NONE;
   void setTurnState(LiveTurnState newState, const char* reason = nullptr);
@@ -218,6 +219,10 @@ class GeminiLiveProbe {
   uint32_t speaking_started_ms_ = 0;
   uint32_t speech_finished_ms_ = 0;
   int16_t* rec_buf_ = nullptr;
+  static constexpr size_t AUDIO_B64_BUFFER_BYTES = 3072;
+  static constexpr size_t AUDIO_JSON_BUFFER_BYTES = 4096;
+  char* audio_b64_buf_ = nullptr;
+  char* audio_json_buf_ = nullptr;
   int next_audio_buf_ = 0;
   bool connected_ = false;
   bool setup_complete_ = false;
@@ -333,7 +338,8 @@ class GeminiLiveProbe {
   MemoryStore* memory_ = nullptr;
 
   static GeminiLiveProbe* self_;
-  static void wsEvent(WStype_t type, uint8_t* payload, size_t length);
+  void drainTransportEvents();
+  void handleDisconnectEvent();
   void handleMessage(uint8_t* payload, size_t length);
   void handleTranscription(JsonVariant serverContent);
   void appendOutputTranscriptChunk(const char* text);
@@ -341,10 +347,12 @@ class GeminiLiveProbe {
   void recordAndSendAudioChunk();
   void playListeningChirp();
   void sendRealtimeAudioBase64(const String& b64);
+  void sendRealtimeAudioChunk(const char* b64, size_t b64_len);
   void cancelWaitingModelGuard(const char* reason = nullptr);
   void checkWaitingModelGuard();
   void recoverFromWaitingModel();
   void sendRecentDialogueHistory();
   String encodeBase64(const uint8_t* input, size_t size);
+  size_t encodeBase64ToBuffer(const uint8_t* input, size_t size, char* out, size_t max_out);
   int decodeBase64(const char* input, int size, char* output);
 };

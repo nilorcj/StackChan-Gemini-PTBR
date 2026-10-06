@@ -14,6 +14,7 @@
 #include <vector>
 #include <algorithm>
 #include "ConfigManager.h"
+#include "TlsArbiter.h"
 
 class GoogleCalendarClient {
  public:
@@ -90,6 +91,12 @@ class GoogleCalendarClient {
 
   // Core 0 background fetch execution (zero SD access, zero blocking of Core 1)
   bool executeFetch(const std::function<bool()>& preflightGate = nullptr) {
+    TlsFeedsGuard tlsGuard;
+    if (!tlsGuard.isAcquired()) {
+      Serial.println("[GoogleCalendar] fetch deferred: TLS owned by Gemini");
+      return false;
+    }
+
     if (inFlight_.load(std::memory_order_acquire)) {
       Serial.println("[GoogleCalendar] fetch aborted: already in flight");
       return false;

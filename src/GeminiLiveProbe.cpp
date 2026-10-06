@@ -88,8 +88,10 @@ bool GeminiLiveProbe::acquireI2sSpeaker(const char* reason) {
   Serial.printf("I2S_OWNER: %s -> SPEAKER (reason: %s)\n", i2sOwnerString(), reason ? reason : "playback");
 
   // Step 1: Drain and end microphone
-  if (realtime_recording_ || M5.Mic.isRecording() || M5.Mic.isRunning()) {
-    realtime_recording_ = false;
+  if (realtime_recording_) {
+    stopRealtimeRecord(reason ? reason : "acquire_speaker");
+  }
+  if (M5.Mic.isRecording() || M5.Mic.isRunning()) {
     mic_ready_for_speech_ = false;
     mic_dma_in_progress_ = false;
     uint32_t micWait = 0;
@@ -190,6 +192,8 @@ GeminiLiveProbe::~GeminiLiveProbe() {
     if (audio_buf_[i]) { free(audio_buf_[i]); audio_buf_[i] = nullptr; }
   }
   if (rec_buf_) { free(rec_buf_); rec_buf_ = nullptr; }
+  if (audio_b64_buf_) { free(audio_b64_buf_); audio_b64_buf_ = nullptr; }
+  if (audio_json_buf_) { free(audio_json_buf_); audio_json_buf_ = nullptr; }
 }
 
 bool GeminiLiveProbe::begin(const char* api_key) {
@@ -237,8 +241,34 @@ bool GeminiLiveProbe::begin(const char* api_key) {
     memset(rec_buf_, 0, RT_REC_SAMPLES * sizeof(int16_t));
   }
 
+  // [HEAP1] Reusable audio upload buffers in PSRAM (zero dynamic churn on hot path)
+  if (!audio_b64_buf_) {
+    audio_b64_buf_ = static_cast<char*>(ps_malloc(AUDIO_B64_BUFFER_BYTES));
+    if (!audio_b64_buf_) {
+      Serial.printf("[ERROR] GeminiLive: [HEAP1] ps_malloc(%u) for audio_b64_buf_ failed — insufficient PSRAM\n",
+                    static_cast<unsigned>(AUDIO_B64_BUFFER_BYTES));
+      return false;
+    }
+    memset(audio_b64_buf_, 0, AUDIO_B64_BUFFER_BYTES);
+    Serial.printf("[HEAP1] audio_b64_buf=PSRAM size=%u\n", static_cast<unsigned>(AUDIO_B64_BUFFER_BYTES));
+  }
+  if (!audio_json_buf_) {
+    audio_json_buf_ = static_cast<char*>(ps_malloc(AUDIO_JSON_BUFFER_BYTES));
+    if (!audio_json_buf_) {
+      Serial.printf("[ERROR] GeminiLive: [HEAP1] ps_malloc(%u) for audio_json_buf_ failed — insufficient PSRAM\n",
+                    static_cast<unsigned>(AUDIO_JSON_BUFFER_BYTES));
+      return false;
+    }
+    memset(audio_json_buf_, 0, AUDIO_JSON_BUFFER_BYTES);
+    Serial.printf("[HEAP1] audio_json_buf=PSRAM size=%u\n", static_cast<unsigned>(AUDIO_JSON_BUFFER_BYTES));
+  }
+
   configured_ = (api_key_ && api_key_[0]);
   Serial.println(configured_ ? "GeminiLive: configured lazy" : "GeminiLive: missing api key");
+  if (configured_) {
+    transport_.begin(api_key_);
+    transport_.startTask();
+  }
   return configured_;
 }
 
@@ -251,12 +281,8 @@ bool GeminiLiveProbe::connect() {
   connect_requested_ = true;
   last_activity_ms_ = millis();
   connect_started_ms_ = last_activity_ms_;
-  // API key is appended to the WebSocket path but must never be printed.
-  ws_.beginSSL("generativelanguage.googleapis.com", 443,
-               String("/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=") + api_key_);
-  ws_.onEvent(GeminiLiveProbe::wsEvent);
-  ws_.setReconnectInterval(5000);
-  ws_.enableHeartbeat(15000, 4000, 2);
+  transport_epoch_++;
+  transport_.requestConnect(transport_epoch_);
   return true;
 }
 
@@ -302,7 +328,7 @@ void GeminiLiveProbe::disconnect(bool intentional, const char* finalEmotion) {
   cancelWaitingModelGuard("disconnect");
   waiting_model_aborted_turn_ = false;
   setTurnState(LiveTurnState::IDLE, "disconnect");
-  ws_.disconnect();
+  transport_.requestDisconnect(transport_epoch_);
   if (emotion_) emotion_->setEmotion(intentional ? intentional_disconnect_emotion_.c_str() : "error");
 }
 
@@ -400,9 +426,7 @@ void GeminiLiveProbe::loop() {
     connect();
   }
 
-  if (connect_requested_ || connected_) {
-    ws_.loop();
-  }
+  drainTransportEvents();
   if (realtime_recording_) recordAndSendAudioChunk();
 
   // Playback gate evaluation (Rules 2, 3, 4, 5, 8):
@@ -739,10 +763,23 @@ void GeminiLiveProbe::sendSetup() {
   setup["inputAudioTranscription"].to<JsonObject>();
   setup["outputAudioTranscription"].to<JsonObject>();
 
+  // [EXP:SR-A] Bypass temporário de sessionResumption para teste A/B
+#define TEMP_SESSION_RESUMPTION_DISABLED_TEST 1
+
+#if TEMP_SESSION_RESUMPTION_DISABLED_TEST
+  // Include session resumption disabled for diagnostic experiment SR-A
+  bool isHandleValid = false;
+  if (session_resumption_handle_.length() > 0) {
+    session_resumption_handle_ = "";
+    session_resumption_saved_ms_ = 0;
+  }
+  Serial.println("GeminiLive: [TEMP_SESSION_RESUMPTION_DISABLED_TEST] sessionResumption bypassed -> fresh session enforced");
+#else
   // Include session resumption when a valid handle was acquired within the TTL window (5 min)
   bool isHandleValid = (session_resumption_handle_.length() > 0) &&
                        (session_resumption_saved_ms_ > 0) &&
                        (millis() - session_resumption_saved_ms_ < SESSION_RESUMPTION_TTL_MS);
+#endif
 
   if (isHandleValid) {
     setup["sessionResumption"]["handle"] = session_resumption_handle_;
@@ -867,7 +904,7 @@ void GeminiLiveProbe::sendSetup() {
   sys["parts"].add<JsonObject>()["text"] = instruction;
   String out;
   serializeJson(doc, out);
-  ws_.sendTXT(out);
+  transport_.enqueue(OutboundKind::CTRL, out.c_str(), out.length(), transport_epoch_);
 }
 
 void GeminiLiveProbe::sendTextTurn(const String& text) {
@@ -885,7 +922,7 @@ void GeminiLiveProbe::sendTextTurn(const String& text) {
   String out;
   serializeJson(doc, out);
   last_activity_ms_ = millis();
-  ws_.sendTXT(out);
+  transport_.enqueue(OutboundKind::CTRL, out.c_str(), out.length(), transport_epoch_);
   Serial.printf("GeminiLive: sent clientContent text turn chars=%u\n", static_cast<unsigned>(text.length()));
 }
 
@@ -923,7 +960,7 @@ void GeminiLiveProbe::sendRecentDialogueHistory() {
   String out;
   serializeJson(doc, out);
   last_activity_ms_ = millis();
-  ws_.sendTXT(out);
+  transport_.enqueue(OutboundKind::CTRL, out.c_str(), out.length(), transport_epoch_);
   Serial.printf("GeminiLive: sent initial history turns count=%u turnComplete=false\n", static_cast<unsigned>(turns.size()));
 
   // 2. Finaliza o carregamento do histórico inicial conforme protocolo oficial (turnComplete = true).
@@ -934,7 +971,7 @@ void GeminiLiveProbe::sendRecentDialogueHistory() {
   String finishOut;
   serializeJson(finishDoc, finishOut);
   last_activity_ms_ = millis();
-  ws_.sendTXT(finishOut);
+  transport_.enqueue(OutboundKind::CTRL, finishOut.c_str(), finishOut.length(), transport_epoch_);
   Serial.println("GeminiLive: initial history finalized (turnComplete=true); ready for realtimeInput");
 }
 
@@ -989,7 +1026,7 @@ bool GeminiLiveProbe::sendImageTurn(const String& imageBase64, const String& pro
   out += "\"}}]}],\"turnComplete\":true}}";
   Serial.printf("GeminiLive: sending image turn b64=%u json=%u\n",
                 static_cast<unsigned>(imageBase64.length()), static_cast<unsigned>(out.length()));
-  bool sent = ws_.sendTXT(out);
+  bool sent = transport_.enqueue(OutboundKind::LARGE, out.c_str(), out.length(), transport_epoch_);
   return sent;
 }
 
@@ -1170,6 +1207,19 @@ void GeminiLiveProbe::startRealtimeRecord() {
     pending_start_recording_ = true;
     return;
   }
+
+  if (realtime_recording_) {
+    if (turn_state_ == LiveTurnState::RETURNING_TO_LISTEN) {
+      mic_ready_for_speech_ = true;
+      setTurnState(LiveTurnState::LISTENING, "mic already active; returning to listening");
+      if (emotion_) emotion_->setEmotion("listening");
+      listening_started_ms_ = millis();
+      pending_start_recording_ = false;
+      Serial.println("[DIAG:LISTEN_RECOVER] recording=1 RETURNING_TO_LISTEN->LISTENING");
+    }
+    return;
+  }
+
   if (!realtime_recording_) {
     Serial.println("GeminiLive: start realtime recording");
     if (!acquireI2sMic("startRealtimeRecord")) {
@@ -1191,16 +1241,37 @@ void GeminiLiveProbe::startRealtimeRecord() {
   }
 }
 
-void GeminiLiveProbe::stopRealtimeRecord() {
-  if (realtime_recording_) {
-    Serial.println("GeminiLive: stop realtime recording");
-    realtime_recording_ = false;
-    mic_ready_for_speech_ = false;
-    mic_dma_in_progress_ = false;
-    listening_started_ms_ = 0;
-    if (emotion_ && !speaking_) emotion_->setEmotion(continuous_conversation_ ? "thinking" : "neutral");
-    record_started_ms_ = 0;
-    stopped_recording_ms_ = millis();
+void GeminiLiveProbe::stopRealtimeRecord(const char* reason) {
+  if (!realtime_recording_) {
+    return;
+  }
+  const char* r = (reason && reason[0]) ? reason : "unspecified";
+  Serial.printf("GeminiLive: stop realtime recording (reason: %s)\n", r);
+
+  // 1. Terminar a captura local
+  realtime_recording_ = false;
+  mic_ready_for_speech_ = false;
+  mic_dma_in_progress_ = false;
+  listening_started_ms_ = 0;
+  record_started_ms_ = 0;
+  stopped_recording_ms_ = millis();
+
+  // 2. Enviar/enfileirar audioStreamEnd de forma centralizada e assíncrona
+  if (!transport_.isConnected() || transport_.getState() != TransportState::OPEN) {
+    Serial.printf("[DIAG:AUDIO_STREAM_END] sent=0 reason=not_open trigger=%s\n", r);
+  } else {
+    static const char kAudioStreamEndJson[] = "{\"realtimeInput\":{\"audioStreamEnd\":true}}";
+    bool enqueued = transport_.enqueue(OutboundKind::CTRL, kAudioStreamEndJson, sizeof(kAudioStreamEndJson) - 1, transport_epoch_);
+    if (enqueued) {
+      Serial.printf("[DIAG:AUDIO_STREAM_END] sent=1 reason=%s\n", r);
+    } else {
+      Serial.printf("[DIAG:AUDIO_STREAM_END] sent=0 reason=queue_fail trigger=%s\n", r);
+    }
+  }
+
+  // 3. Atualizar emoção local
+  if (emotion_ && !speaking_) {
+    emotion_->setEmotion(continuous_conversation_ ? "thinking" : "neutral");
   }
 }
 
@@ -1310,7 +1381,7 @@ void GeminiLiveProbe::disarmConversation(const char* reason) {
   }
 
   if (realtime_recording_) {
-    stopRealtimeRecord();
+    stopRealtimeRecord(reason ? reason : "disarm");
   }
 
   if (turn_state_ != LiveTurnState::SPEAKING && turn_state_ != LiveTurnState::TOOL_CALL) {
@@ -1473,9 +1544,6 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
   }
 
   if (voiceActive) {
-    // Keep armed inactivity deadline pushed while user is speaking (never disarm mid-speech!)
-    armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
-
     if (!local_gate_open_) {
       local_gate_open_ = true;
       local_gate_was_triggered_ = true;
@@ -1530,7 +1598,6 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
                     static_cast<unsigned>(M5.Mic.config().magnification),
                     static_cast<unsigned>(M5.Mic.config().noise_filter_level),
                     turnStateString());
-      armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
     }
   }
 
@@ -1606,10 +1673,16 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
 
   // Audio transmission logic:
   // Continuous PCM streaming: transmit PCM continuously to Gemini while conversation_armed_ and realtime_recording_ in LISTENING.
-  // The local noise gate is for telemetry only; Gemini cloud automaticActivityDetection handles speech_start and speech_end.
-  String audio_base64 = encodeBase64(reinterpret_cast<const uint8_t*>(rec_buf_), RT_REC_SAMPLES * sizeof(int16_t));
-  if (audio_base64.length()) {
-    sendRealtimeAudioBase64(audio_base64);
+  // [HEAP1] Zero-dynamic-allocation hot path: encodeBase64ToBuffer into reusable audio_b64_buf_, then sendRealtimeAudioChunk.
+  size_t b64_len = 0;
+  if (audio_b64_buf_) {
+    b64_len = encodeBase64ToBuffer(reinterpret_cast<const uint8_t*>(rec_buf_),
+                                   RT_REC_SAMPLES * sizeof(int16_t),
+                                   audio_b64_buf_,
+                                   AUDIO_B64_BUFFER_BYTES);
+  }
+  if (b64_len > 0) {
+    sendRealtimeAudioChunk(audio_b64_buf_, b64_len);
     ++mic_chunks_sent_;
     if (local_gate_open_) {
       ++gate_real_chunks_sent_;
@@ -1628,165 +1701,202 @@ void GeminiLiveProbe::recordAndSendAudioChunk() {
   // freeing CPU 0 for IDLE0 to feed the task watchdog timer.
 }
 
-void GeminiLiveProbe::sendRealtimeAudioBase64(const String& b64) {
+void GeminiLiveProbe::sendRealtimeAudioChunk(const char* b64, size_t b64_len) {
   if (!conversation_armed_ || turn_state_ != LiveTurnState::LISTENING || physical_mute_ || isDoNotDisturb()) {
     ++audio_sent_while_disarmed_;
     return;
   }
-  String out;
-  out.reserve(b64.length() + 96);
-  out = "{\"realtimeInput\":{\"audio\":{\"data\":\"";
-  out += b64;
-  out += "\",\"mimeType\":\"audio/pcm;rate=16000\"}}}";
-  ws_.sendTXT(out);
+  if (!audio_json_buf_ || !b64 || b64_len == 0) return;
+
+  static const char kJsonPrefix[] = "{\"realtimeInput\":{\"audio\":{\"data\":\"";
+  static constexpr size_t kPrefixLen = sizeof(kJsonPrefix) - 1; // 33 bytes
+  static const char kJsonSuffix[] = "\",\"mimeType\":\"audio/pcm;rate=16000\"}}}";
+  static constexpr size_t kSuffixLen = sizeof(kJsonSuffix) - 1; // 36 bytes
+
+  size_t total_len = kPrefixLen + b64_len + kSuffixLen;
+  if (total_len + 1 > AUDIO_JSON_BUFFER_BYTES) return;
+
+  memcpy(audio_json_buf_, kJsonPrefix, kPrefixLen);
+  memcpy(audio_json_buf_ + kPrefixLen, b64, b64_len);
+  memcpy(audio_json_buf_ + kPrefixLen + b64_len, kJsonSuffix, kSuffixLen);
+  audio_json_buf_[total_len] = '\0';
+
+  transport_.enqueue(OutboundKind::AUDIO, audio_json_buf_, total_len, transport_epoch_);
+}
+
+void GeminiLiveProbe::sendRealtimeAudioBase64(const String& b64) {
+  sendRealtimeAudioChunk(b64.c_str(), b64.length());
+}
+
+size_t GeminiLiveProbe::encodeBase64ToBuffer(const uint8_t* input, size_t size, char* out, size_t max_out) {
+  if (!input || !out || size == 0 || max_out < 4) return 0;
+  size_t olen = 0;
+  int rc = mbedtls_base64_encode(reinterpret_cast<unsigned char*>(out), max_out, &olen, input, size);
+  if (rc != 0 || olen >= max_out) {
+    return 0;
+  }
+  out[olen] = '\0';
+  return olen;
 }
 
 String GeminiLiveProbe::encodeBase64(const uint8_t* input, size_t size) {
-  size_t olen = 0;
   size_t out_len = ((size + 2) / 3) * 4 + 1;
   char* out = static_cast<char*>(malloc(out_len));
   if (!out) return String();
-  int rc = mbedtls_base64_encode(reinterpret_cast<unsigned char*>(out), out_len, &olen, input, size);
-  if (rc != 0) {
+  size_t olen = encodeBase64ToBuffer(input, size, out, out_len);
+  if (olen == 0) {
     free(out);
     return String();
   }
-  out[olen] = '\0';
   String encoded(out);
   free(out);
   return encoded;
 }
 
-void GeminiLiveProbe::wsEvent(WStype_t type, uint8_t* payload, size_t length) {
-  if (!self_) return;
-  switch (type) {
-    case WStype_ERROR:
-      Serial.print("GeminiLive: websocket error");
-      if (payload && length) {
-        Serial.print(" payload=");
-        Serial.write(payload, length > 160 ? 160 : length);
-      }
-      Serial.println();
-      break;
-    case WStype_CONNECTED:
-      Serial.println("GeminiLive: websocket connected");
-      self_->connected_ = true;
-      self_->connect_requested_ = true;
-      self_->last_activity_ms_ = millis();
-      self_->connect_started_ms_ = 0;
-      self_->sendSetup();
-      break;
-    case WStype_TEXT: {
-      uint32_t ws_t0 = millis();
-      Serial.printf("[DIAG:STACK] HWM_WS=%u type=TEXT len=%u\n",
-                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
-                    static_cast<unsigned>(length));
-      self_->handleMessage(payload, length);
-      uint32_t ws_elapsed = millis() - ws_t0;
-      if (ws_elapsed > 50 || length > 10000) {
-        Serial.printf("[DIAG:FRAME] type=TEXT len=%u handleMsg_ms=%u\n",
-                      static_cast<unsigned>(length), static_cast<unsigned>(ws_elapsed));
-      }
-      break;
+void GeminiLiveProbe::handleDisconnectEvent() {
+  Serial.println("GeminiLive: websocket disconnected");
+  // Check if there is active audio still playing/buffered locally
+  bool has_active_playback = speaking_ || audio_buffered_count_ > 0 ||
+                             (M5.Speaker.isRunning() && M5.Speaker.isPlaying(1));
+  if (has_active_playback) {
+    stream_aborted_ = true;
+    stream_aborted_ms_ = millis();
+    if (audio_chunks_ == 0) {
+      audio_buffered_count_ = 0;
+      audio_queue_read_ = audio_queue_write_;
     }
-    case WStype_BIN: {
-      uint32_t ws_t0 = millis();
-      Serial.printf("[DIAG:STACK] HWM_WS=%u type=BIN len=%u\n",
-                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
-                    static_cast<unsigned>(length));
-      self_->handleMessage(payload, length);
-      uint32_t ws_elapsed = millis() - ws_t0;
-      if (ws_elapsed > 50 || length > 10000) {
-        Serial.printf("[DIAG:FRAME] type=BIN len=%u handleMsg_ms=%u\n",
-                      static_cast<unsigned>(length), static_cast<unsigned>(ws_elapsed));
-      }
-      break;
-    }
-    case WStype_FRAGMENT_TEXT_START:
-    case WStype_FRAGMENT_BIN_START:
-    case WStype_FRAGMENT:
-    case WStype_FRAGMENT_FIN:
-      Serial.printf("GeminiLive: websocket fragment type=%d length=%u\n", static_cast<int>(type), static_cast<unsigned>(length));
-      break;
-    case WStype_PING:
-      Serial.println("GeminiLive: websocket ping");
-      break;
-    case WStype_PONG:
-      Serial.println("GeminiLive: websocket pong");
-      break;
-    case WStype_DISCONNECTED: {
-      Serial.println("GeminiLive: websocket disconnected");
-      // Check if there is active audio still playing/buffered locally
-      bool has_active_playback = self_->speaking_ || self_->audio_buffered_count_ > 0 ||
-                                 (M5.Speaker.isRunning() && M5.Speaker.isPlaying(1));
-      if (has_active_playback) {
-        self_->stream_aborted_ = true;
-        self_->stream_aborted_ms_ = millis();
-        if (self_->audio_chunks_ == 0) {
-          self_->audio_buffered_count_ = 0;
-          self_->audio_queue_read_ = self_->audio_queue_write_;
+    Serial.printf("GeminiLive: stream aborted during playback (buffered=%u dma=%u chunks=%lu) -> preserving speaker drain\n",
+                  static_cast<unsigned>(audio_buffered_count_),
+                  static_cast<unsigned>(M5.Speaker.isPlaying(1)),
+                  static_cast<unsigned long>(audio_chunks_));
+  }
+
+  // A Live websocket may close after silence or network timeout. For the
+  // robot UX, an active conversation that drops should fall back to sleep
+  // instead of staring with a sticky red error face.
+  bool was_active = realtime_recording_ || continuous_conversation_ ||
+                    pending_start_recording_ || pending_text_turn_ || has_active_playback;
+  bool should_sleep = !intentional_disconnect_ && was_active;
+  if (tool_bridge_) {
+    tool_bridge_->invalidatePendingLocalAction();
+  }
+  utterance_input_received_ = false;
+  connected_ = false;
+  setup_complete_ = false;
+  mic_ready_for_speech_ = false;
+  realtime_recording_ = false;
+  if (!has_active_playback) {
+    speaking_ = false;
+    speaking_started_ms_ = 0;
+    playback_started_ms_ = 0;
+    setTurnState(LiveTurnState::IDLE, "ws disconnected");
+    Serial.printf("[DIAG:SLEEP] ws_disconnected was_active=%d should_sleep=%d intentional=%d emo=%s millis=%lu\n",
+                  (int)was_active, (int)should_sleep, (int)intentional_disconnect_,
+                  should_sleep ? "sleep" : intentional_disconnect_emotion_.c_str(), millis());
+    if (emotion_) emotion_->setEmotion(should_sleep ? "sleep" : intentional_disconnect_emotion_.c_str());
+  }
+  continuous_conversation_ = false;
+  cancelWaitingModelGuard("ws disconnected");
+  waiting_model_aborted_turn_ = false;
+  pending_start_recording_ = false;
+  pending_text_turn_ = false;
+  resume_conversation_after_text_ = false;
+  pending_text_ = "";
+  connect_requested_ = false;
+  initial_history_configured_ = false;
+  initial_history_pending_ = false;
+
+  // Se a tentativa de retomada de sessão foi rejeitada ou falhou antes do setupComplete,
+  // descarta o handle para que a próxima conexão seja limpa
+  if (resumption_attempted_ && !session_resumed_) {
+    Serial.println("GeminiLive: session resumption rejected by server; discarding handle for fresh session");
+    session_resumption_handle_ = "";
+    session_resumption_saved_ms_ = 0;
+    resumption_attempted_ = false;
+  }
+
+  // Auto-reconnect if drop was unintentional, WiFi is connected, and not in DND
+  if (!intentional_disconnect_ && was_active && WiFi.status() == WL_CONNECTED && !isDoNotDisturb()) {
+    Serial.println("GeminiLive: unexpected disconnect during conversation -> scheduling auto-reconnect");
+    continuous_conversation_ = true;
+    pending_start_recording_ = true;
+    reconnect_requested_ = true;
+  }
+}
+
+void GeminiLiveProbe::drainTransportEvents() {
+  uint32_t start_ms = millis();
+  int events_processed = 0;
+
+  while (events_processed < 2 && (millis() - start_ms < 8)) {
+    size_t item_size = 0;
+    void* item = transport_.receiveInbound(&item_size);
+    if (!item) break;
+
+    const InboundEventHeader* hdr = static_cast<const InboundEventHeader*>(item);
+    if (hdr->epoch == transport_epoch_) {
+      uint8_t* payload = static_cast<uint8_t*>(item) + sizeof(InboundEventHeader);
+      size_t len = hdr->length;
+
+      switch (hdr->type) {
+        case InboundEventType::CONNECTED:
+          Serial.println("GeminiLive: websocket connected");
+          connected_ = true;
+          connect_requested_ = true;
+          last_activity_ms_ = millis();
+          connect_started_ms_ = 0;
+          sendSetup();
+          break;
+
+        case InboundEventType::TEXT_FRAME: {
+          uint32_t ws_t0 = millis();
+          Serial.printf("[DIAG:STACK] HWM_WS=%u type=TEXT len=%u\n",
+                        static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                        static_cast<unsigned>(len));
+          handleMessage(payload, len);
+          uint32_t ws_elapsed = millis() - ws_t0;
+          if (ws_elapsed > 50 || len > 10000) {
+            Serial.printf("[DIAG:FRAME] type=TEXT len=%u handleMsg_ms=%u\n",
+                          static_cast<unsigned>(len), static_cast<unsigned>(ws_elapsed));
+          }
+          break;
         }
-        Serial.printf("GeminiLive: stream aborted during playback (buffered=%u dma=%u chunks=%lu) -> preserving speaker drain\n",
-                      static_cast<unsigned>(self_->audio_buffered_count_),
-                      static_cast<unsigned>(M5.Speaker.isPlaying(1)),
-                      static_cast<unsigned long>(self_->audio_chunks_));
-      }
 
-      // A Live websocket may close after silence or network timeout. For the
-      // robot UX, an active conversation that drops should fall back to sleep
-      // instead of staring with a sticky red error face.
-      bool was_active = self_->realtime_recording_ || self_->continuous_conversation_ ||
-                        self_->pending_start_recording_ || self_->pending_text_turn_ || has_active_playback;
-      bool should_sleep = !self_->intentional_disconnect_ && was_active;
-      if (self_->tool_bridge_) {
-        self_->tool_bridge_->invalidatePendingLocalAction();
-      }
-      self_->utterance_input_received_ = false;
-      self_->connected_ = false;
-      self_->setup_complete_ = false;
-      self_->mic_ready_for_speech_ = false;
-      self_->realtime_recording_ = false;
-      if (!has_active_playback) {
-        self_->speaking_ = false;
-        self_->speaking_started_ms_ = 0;
-        self_->playback_started_ms_ = 0;
-        self_->setTurnState(LiveTurnState::IDLE, "ws disconnected");
-        Serial.printf("[DIAG:SLEEP] ws_disconnected was_active=%d should_sleep=%d intentional=%d emo=%s millis=%lu\n",
-                      (int)was_active, (int)should_sleep, (int)self_->intentional_disconnect_,
-                      should_sleep ? "sleep" : self_->intentional_disconnect_emotion_.c_str(), millis());
-        if (self_->emotion_) self_->emotion_->setEmotion(should_sleep ? "sleep" : self_->intentional_disconnect_emotion_.c_str());
-      }
-      self_->continuous_conversation_ = false;
-      self_->cancelWaitingModelGuard("ws disconnected");
-      self_->waiting_model_aborted_turn_ = false;
-      self_->pending_start_recording_ = false;
-      self_->pending_text_turn_ = false;
-      self_->resume_conversation_after_text_ = false;
-      self_->pending_text_ = "";
-      self_->connect_requested_ = false;
-      self_->initial_history_configured_ = false;
-      self_->initial_history_pending_ = false;
+        case InboundEventType::BINARY_FRAME: {
+          uint32_t ws_t0 = millis();
+          Serial.printf("[DIAG:STACK] HWM_WS=%u type=BIN len=%u\n",
+                        static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
+                        static_cast<unsigned>(len));
+          handleMessage(payload, len);
+          uint32_t ws_elapsed = millis() - ws_t0;
+          if (ws_elapsed > 50 || len > 10000) {
+            Serial.printf("[DIAG:FRAME] type=BIN len=%u handleMsg_ms=%u\n",
+                          static_cast<unsigned>(len), static_cast<unsigned>(ws_elapsed));
+          }
+          break;
+        }
 
-      // Se a tentativa de retomada de sessão foi rejeitada ou falhou antes do setupComplete,
-      // descarta o handle para que a próxima conexão seja limpa
-      if (self_->resumption_attempted_ && !self_->session_resumed_) {
-        Serial.println("GeminiLive: session resumption rejected by server; discarding handle for fresh session");
-        self_->session_resumption_handle_ = "";
-        self_->session_resumption_saved_ms_ = 0;
-        self_->resumption_attempted_ = false;
-      }
+        case InboundEventType::DISCONNECTED:
+          handleDisconnectEvent();
+          break;
 
-      // Auto-reconnect if drop was unintentional, WiFi is connected, and not in DND
-      if (!self_->intentional_disconnect_ && was_active && WiFi.status() == WL_CONNECTED && !self_->isDoNotDisturb()) {
-        Serial.println("GeminiLive: unexpected disconnect during conversation -> scheduling auto-reconnect");
-        self_->continuous_conversation_ = true;
-        self_->pending_start_recording_ = true;
-        self_->reconnect_requested_ = true;
+        case InboundEventType::ERROR_FRAME:
+          Serial.print("GeminiLive: websocket error");
+          if (payload && len) {
+            Serial.print(" payload=");
+            Serial.write(payload, len > 160 ? 160 : len);
+          }
+          Serial.println();
+          break;
+
+        case InboundEventType::PONG_FRAME:
+          Serial.println("GeminiLive: websocket pong");
+          break;
       }
-      break;
     }
-    default:
-      break;
+
+    transport_.returnInboundItem(item);
+    events_processed++;
   }
 }
 
@@ -1922,6 +2032,9 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
   bool cloudWaitingInput = serverContent["waitingForInput"] | false;
 
   if ((interimText && interimText[0]) || (inTxText && inTxText[0]) || cloudWaitingInput) {
+    if (conversation_armed_ && turn_state_ == LiveTurnState::LISTENING) {
+      armed_timeout_deadline_ms_ = millis() + ARMED_INACTIVITY_TIMEOUT_MS;
+    }
     speech_start_seen_ = true;
     if (inTxText && inTxText[0]) speech_end_seen_ = true;
     Serial.printf("[DIAG:CLOUD_VAD] ts=%lu speech_start=1 speech_end=%d turnId=%lu local_gate_open=%d rms=%u peak=%u ms_since_gate=%lu event=%s\n",
@@ -2053,13 +2166,13 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
     response_complete_received_ = false; // Awaiting model's verbal turn responding to tool!
 
     uint32_t send_start = millis();
-    bool is_ws_connected = connected_ && ws_.isConnected();
+    bool is_ws_connected = connected_ && transport_.isConnected();
     bool is_spk_playing = speaking_ || (M5.Speaker.isRunning() && M5.Speaker.isPlaying(1) > 0);
     uint8_t buf_count = audio_buffered_count_;
     uint32_t free_h = ESP.getFreeHeap();
     uint32_t max_block = ESP.getMaxAllocHeap();
 
-    bool send_ok = ws_.sendTXT(out);
+    bool send_ok = transport_.enqueue(OutboundKind::CTRL, out.c_str(), out.length(), transport_epoch_);
     uint32_t send_end = millis();
     uint32_t send_dur = send_end - send_start;
 
