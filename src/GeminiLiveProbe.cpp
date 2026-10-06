@@ -1826,6 +1826,15 @@ void GeminiLiveProbe::handleDisconnectEvent() {
     resumption_attempted_ = false;
   }
 
+  // [PATCH F] Limpa arming stale se disconnect remoto/não intencional ocorrer com robô inativo
+  if (!intentional_disconnect_ && !was_active && conversation_armed_) {
+    conversation_armed_ = false;
+    armed_timeout_deadline_ms_ = 0;
+    pending_start_recording_ = false;
+    continuous_conversation_ = false;
+    Serial.println("[DIAG:STALE_ARM_CLEAR] reason=remote_idle_disconnect");
+  }
+
   // Auto-reconnect if drop was unintentional, WiFi is connected, and not in DND
   if (!intentional_disconnect_ && was_active && WiFi.status() == WL_CONNECTED && !isDoNotDisturb()) {
     Serial.println("GeminiLive: unexpected disconnect during conversation -> scheduling auto-reconnect");
