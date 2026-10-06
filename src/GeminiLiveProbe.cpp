@@ -309,6 +309,7 @@ void GeminiLiveProbe::disconnect(bool intentional, const char* finalEmotion) {
   connect_requested_ = false;
   reconnect_requested_ = false;
   connect_started_ms_ = 0;
+  setup_wait_started_ms_ = 0;
   speaking_started_ms_ = 0;
   playback_started_ms_ = 0;
   audio_queue_write_ = 0;
@@ -699,6 +700,15 @@ void GeminiLiveProbe::loop() {
       millis() - connect_started_ms_ > CONNECT_TIMEOUT_MS) {
     Serial.println("GeminiLive: connect timeout; reset to sleep");
     disconnect(true, "sleep");
+    return;
+  }
+  if (connected_ && !setup_complete_ && setup_wait_started_ms_ &&
+      millis() - setup_wait_started_ms_ >= SETUP_COMPLETE_TIMEOUT_MS) {
+    Serial.printf("[DIAG:SETUP_TIMEOUT] elapsed=%lu ms; disconnecting and disarming\n",
+                  millis() - setup_wait_started_ms_);
+    setup_wait_started_ms_ = 0;
+    disconnect(true, "setup_timeout");
+    disarmConversation("SETUP_TIMEOUT");
     return;
   }
   if (conversation_armed_ && continuous_conversation_ && isReady() && !realtime_recording_ && !speaking_ &&
@@ -1783,6 +1793,7 @@ void GeminiLiveProbe::handleDisconnectEvent() {
   utterance_input_received_ = false;
   connected_ = false;
   setup_complete_ = false;
+  setup_wait_started_ms_ = 0;
   mic_ready_for_speech_ = false;
   realtime_recording_ = false;
   if (!has_active_playback) {
@@ -1845,6 +1856,7 @@ void GeminiLiveProbe::drainTransportEvents() {
           connect_requested_ = true;
           last_activity_ms_ = millis();
           connect_started_ms_ = 0;
+          setup_wait_started_ms_ = millis();
           sendSetup();
           break;
 
@@ -1947,6 +1959,7 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
   // 1. setupComplete is ALWAYS processed (never blocked by aborted turn)
   JsonVariant setupComplete = doc["setupComplete"];
   if (!setupComplete.isNull()) {
+    setup_wait_started_ms_ = 0;
     cancelWaitingModelGuard("setupComplete");
     waiting_model_aborted_turn_ = false;
     Serial.println("GeminiLive: setupComplete");

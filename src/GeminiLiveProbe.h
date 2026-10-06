@@ -184,6 +184,7 @@ class GeminiLiveProbe {
   static constexpr uint32_t REALTIME_RECORD_TIMEOUT_MS = 30000;
   static constexpr uint32_t IDLE_DISCONNECT_MS = 120000;
   static constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
+  static constexpr uint32_t SETUP_COMPLETE_TIMEOUT_MS = 10000;
   static constexpr uint32_t CONTINUOUS_CONVERSATION_TIMEOUT_MS = 90000; // 90s silence timeout: comfortable conversational pacing, allows natural pauses to think
   static constexpr uint32_t CONTINUOUS_RECORD_WATCHDOG_MS = 2500;
   static constexpr uint32_t END_SESSION_GRACE_MS = 8000;
@@ -257,6 +258,7 @@ class GeminiLiveProbe {
   uint32_t record_started_ms_ = 0;
   uint32_t last_activity_ms_ = 0;
   uint32_t connect_started_ms_ = 0;
+  uint32_t setup_wait_started_ms_ = 0;
   uint32_t stopped_recording_ms_ = 0;
   uint32_t end_session_requested_ms_ = 0;
   uint32_t dnd_until_ms_ = 0;
