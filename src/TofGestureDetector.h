@@ -37,9 +37,23 @@ class TofGestureDetector {
 
     // Regra 2: Rejeicao de outliers aberrantes com re-sincronizacao de baseline segura
     if (sampleCount_ > 0) {
-      uint16_t prevDist = samples_[(sampleIdx_ + kHistorySize - 1) % kHistorySize].distMm;
-      int16_t stepDelta = abs(static_cast<int32_t>(distMm) - static_cast<int32_t>(prevDist));
+      Sample prevSample = samples_[(sampleIdx_ + kHistorySize - 1) % kHistorySize];
+      int16_t stepDelta = abs(static_cast<int32_t>(distMm) - static_cast<int32_t>(prevSample.distMm));
       if (stepDelta > kMaxPhysJumpPerSampleMm) {
+        // Excecao para aproximacao rapida plausivel:
+        // Quando a mao entra subitamente na faixa valida de pico vindo de um fundo mais distante,
+        // preservamos a amostra anterior como referencia de inicio de aproximacao (approach seed).
+        if (distMm < prevSample.distMm &&
+            distMm >= kWavePeakMinDistMm &&
+            distMm <= kWavePeakMaxDistMm) {
+          samples_[0] = prevSample;
+          samples_[1] = {now, distMm};
+          sampleIdx_ = 2;
+          sampleCount_ = 2;
+          Serial.printf("[DIAG:TOF_WAVE] APPROACH_SEED prev=%u cur=%u\n", prevSample.distMm, distMm);
+          return TofEvent::NONE;
+        }
+
         // Outlier detectado: nao permite que um unico salto gere HAND_WAVE.
         // Re-sincroniza baseline com a leitura atual descartando historico anterior
         // para nao deixar o detector preso comparando contra uma referencia antiga.
