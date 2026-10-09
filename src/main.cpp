@@ -415,6 +415,9 @@ static bool readLtr553Als(uint16_t& alsAvg) {
   return true;
 }
 
+static bool s_boot_rss_prefetch_triggered = false;
+static bool s_boot_gemini_connect_triggered = false;
+
 static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConfigured = false) {
   Serial.printf("BootDashboard: displaying %u ms dashboard screen (touch screen to skip)...\n", static_cast<unsigned>(durationMs));
   auto& display = M5StackChan.Display();
@@ -474,7 +477,6 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
   uint16_t distMm = 0;
   UnitPaHubManager::EnvData env;
   bool wifiConnectedBefore = false;
-  bool geminiConnectTriggered = false;
 
   constexpr uint32_t kMinDashboardMs = 1800; // ~1.8 s minimum time
   constexpr uint32_t kNoWifiMaxMs = 8000;    // ~8 s ceiling if Wi-Fi cannot connect
@@ -515,10 +517,28 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
                     WiFi.localIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
       configureNtpOnce();
       webConfig.begin(configManager.webConfig());
-      if (geminiConfigured && !geminiConnectTriggered) {
-        geminiConnectTriggered = true;
-        Serial.println("Gemini: connecting WebSocket concurrently during boot screen...");
-        gemini.connect();
+      if (!s_boot_rss_prefetch_triggered) {
+        s_boot_rss_prefetch_triggered = true;
+        Serial.printf("[BOOT_PREFETCH_GATE] WiFi ready -> RSS prefetch before Gemini (internal_free=%u, largest_block=%u)\n",
+                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+        liveFeeds.triggerBootPrefetch();
+      }
+    }
+
+    // Check if RSS prefetch finished or aborted to release Gemini during dashboard
+    if (isWifi && s_boot_rss_prefetch_triggered && !s_boot_gemini_connect_triggered) {
+      if (liveFeeds.isBootPrefetchCompleted() || liveFeeds.isBootPrefetchAborted()) {
+        s_boot_gemini_connect_triggered = true;
+        const char* rssStatus = liveFeeds.isBootPrefetchCompleted() ? "finished" : "aborted";
+        Serial.printf("[BOOT_PREFETCH_GATE] RSS %s -> releasing Gemini (internal_free=%u, largest_block=%u)\n",
+                      rssStatus,
+                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+        if (geminiConfigured) {
+          Serial.println("Gemini: connecting WebSocket concurrently during boot screen...");
+          gemini.connect();
+        }
       }
     }
 
@@ -538,7 +558,9 @@ static void showBootDashboardScreen(uint32_t durationMs = 15000, bool geminiConf
 
     // Keep WebSocket and WebConfig active concurrently during boot screen
     if (isWifi) {
-      gemini.loop();
+      if (s_boot_gemini_connect_triggered) {
+        gemini.loop();
+      }
       webConfig.loop();
     }
 
@@ -872,6 +894,19 @@ void setup() {
     bool wifi_ok = (WiFi.status() == WL_CONNECTED);
     if (wifi_ok) {
       configureNtpOnce();
+      if (geminiConfigured && !s_boot_gemini_connect_triggered) {
+        if (s_boot_rss_prefetch_triggered) {
+          liveFeeds.waitForBootPrefetch(8000);
+        }
+        s_boot_gemini_connect_triggered = true;
+        const char* rssStatus = liveFeeds.isBootPrefetchCompleted() ? "finished" : "aborted";
+        Serial.printf("[BOOT_PREFETCH_GATE] RSS %s -> releasing Gemini (internal_free=%u, largest_block=%u)\n",
+                      rssStatus,
+                      static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                      static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)));
+        Serial.println("Gemini: connecting WebSocket post-dashboard...");
+        gemini.connect();
+      }
       if (configManager.config().webEnabled) {
         auto webOpts = configManager.webConfig();
         webConfig.begin(webOpts);
@@ -1074,26 +1109,8 @@ void loop() {
   liveFeeds.setSystemIdle(systemIdle);
   liveFeeds.loop();
 
-  // Safe trigger for LiveFeeds boot prefetch: only after Gemini setupComplete, or if Gemini not configured when system is idle
-  static bool s_boot_prefetch_triggered = false;
-  if (!s_boot_prefetch_triggered && isWifiConnected) {
-    bool geminiConfigured = configManager.config().geminiEnabled && configManager.hasGeminiApiKey();
-    bool canTrigger = false;
-    if (geminiConfigured) {
-      if (gemini.isReady()) {
-        canTrigger = true;
-      }
-    } else {
-      if (systemIdle) {
-        canTrigger = true;
-      }
-    }
-    if (canTrigger) {
-      s_boot_prefetch_triggered = true;
-      Serial.println("[BOOT_PREFETCH] Triggering boot prefetch safely (Gemini ready or system idle)");
-      liveFeeds.triggerBootPrefetch();
-    }
-  }
+  // Safe trigger for LiveFeeds boot prefetch: now executed exclusively at boot before Gemini connects
+  (void)0;
 
   // Opportunistic background calendar refresh trigger on Core 0 (zero TLS work on Core 1)
   static uint32_t s_last_cal_idle_refresh_ms = 0;
