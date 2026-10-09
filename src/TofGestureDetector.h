@@ -17,11 +17,11 @@ class TofGestureDetector {
 
   // Parametros do gesto de mao rapido (HAND_WAVE):
   // Padrao: aproximacao rapida -> pico proximo plausivel -> afastamento/reversao em janela curta
-  static constexpr int16_t  kWaveMinDeltaMm = 120;     // Minimo 120mm de variacao na aproximacao
+  static constexpr int16_t  kWaveMinDeltaMm = 200;     // Minimo 200mm de variacao na aproximacao
   static constexpr int16_t  kWaveRetreatDeltaMm = 80;  // Minimo 80mm de recuo/afastamento apos o pico
   static constexpr uint32_t kWaveWindowMaxMs = 700;    // Janela maxima total do gesto (aproximacao + recuo)
   static constexpr uint16_t kWavePeakMinDistMm = 60;   // Limite inferior do pico (evita colar no sensor)
-  static constexpr uint16_t kWavePeakMaxDistMm = 380;  // Limite superior do pico proximo
+  static constexpr uint16_t kWavePeakMaxDistMm = 300;  // Limite superior do pico proximo
   static constexpr int16_t  kMaxPhysJumpPerSampleMm = 350; // Salto maximo plausivel em 50ms (outlier filter)
 
   struct Sample {
@@ -37,23 +37,9 @@ class TofGestureDetector {
 
     // Regra 2: Rejeicao de outliers aberrantes com re-sincronizacao de baseline segura
     if (sampleCount_ > 0) {
-      Sample prevSample = samples_[(sampleIdx_ + kHistorySize - 1) % kHistorySize];
-      int16_t stepDelta = abs(static_cast<int32_t>(distMm) - static_cast<int32_t>(prevSample.distMm));
+      uint16_t prevDist = samples_[(sampleIdx_ + kHistorySize - 1) % kHistorySize].distMm;
+      int16_t stepDelta = abs(static_cast<int32_t>(distMm) - static_cast<int32_t>(prevDist));
       if (stepDelta > kMaxPhysJumpPerSampleMm) {
-        // Excecao para aproximacao rapida plausivel:
-        // Quando a mao entra subitamente na faixa valida de pico vindo de um fundo mais distante,
-        // preservamos a amostra anterior como referencia de inicio de aproximacao (approach seed).
-        if (distMm < prevSample.distMm &&
-            distMm >= kWavePeakMinDistMm &&
-            distMm <= kWavePeakMaxDistMm) {
-          samples_[0] = prevSample;
-          samples_[1] = {now, distMm};
-          sampleIdx_ = 2;
-          sampleCount_ = 2;
-          Serial.printf("[DIAG:TOF_WAVE] APPROACH_SEED prev=%u cur=%u\n", prevSample.distMm, distMm);
-          return TofEvent::NONE;
-        }
-
         // Outlier detectado: nao permite que um unico salto gere HAND_WAVE.
         // Re-sincroniza baseline com a leitura atual descartando historico anterior
         // para nao deixar o detector preso comparando contra uma referencia antiga.

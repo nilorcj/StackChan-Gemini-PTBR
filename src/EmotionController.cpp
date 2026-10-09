@@ -150,27 +150,26 @@ static const Latin1GLCDFont s_latin1Font;
 
 void EmotionController::begin() {
   mouthSprite_.setColorDepth(16);
-  mouthSprite_.setPsram(false);
+  mouthSprite_.setPsram(true);
   void* pMouth = mouthSprite_.createSprite(kMouthSpriteW, kMouthSpriteH);
 
   leftEyeSprite_.setColorDepth(16);
-  leftEyeSprite_.setPsram(false);
+  leftEyeSprite_.setPsram(true);
   void* pLeft = leftEyeSprite_.createSprite(kLeftEyeSpriteW, kLeftEyeSpriteH);
 
   rightEyeSprite_.setColorDepth(16);
-  rightEyeSprite_.setPsram(false);
+  rightEyeSprite_.setPsram(true);
   void* pRight = rightEyeSprite_.createSprite(kRightEyeSpriteW, kRightEyeSpriteH);
 
   if (pMouth != nullptr && pLeft != nullptr && pRight != nullptr) {
     partialRenderingEnabled_ = true;
-    Serial.printf("Emotion: Partial sprites created in internal SRAM (mouth=%p 100x54, left=%p 96x80, right=%p 96x80)\n",
-                  pMouth, pLeft, pRight);
+    Serial.println("Emotion: Partial sprites created in PSRAM");
   } else {
     partialRenderingEnabled_ = false;
     mouthSprite_.deleteSprite();
     leftEyeSprite_.deleteSprite();
     rightEyeSprite_.deleteSprite();
-    Serial.println("Emotion: Partial sprites SRAM allocation failed, falling back to full-screen canvas");
+    Serial.println("Emotion: Partial sprites allocation failed, falling back to full-screen canvas");
   }
 
   randomSeed(esp_random());

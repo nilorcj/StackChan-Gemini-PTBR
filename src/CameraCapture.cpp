@@ -53,7 +53,10 @@ bool CameraCapture::initHardware_() {
     ready_ = false;
     hardware_active_ = false;
     last_error_ = String("esp_camera_init_failed:") + String(static_cast<int>(err));
-    Serial.printf("Camera: init failed err=%d\n", static_cast<int>(err));
+    bool i2cRestored = M5.In_I2C.begin();
+    Serial.printf("Camera: init failed err=%d; In_I2C restore=%s\n",
+                  static_cast<int>(err),
+                  i2cRestored ? "ok" : "failed");
     return false;
   }
   sensor_t* sensor = esp_camera_sensor_get();
@@ -163,7 +166,8 @@ bool CameraCapture::captureJpegInternal_(uint8_t** out, size_t* len) {
     return false;
   }
 
-  uint8_t* copy = static_cast<uint8_t*>(malloc(jpg_len));
+  uint8_t* copy = static_cast<uint8_t*>(ps_malloc(jpg_len));
+  if (!copy) copy = static_cast<uint8_t*>(malloc(jpg_len));
   if (!copy) {
     esp_camera_fb_return(fb);
     if (!direct_jpeg && jpg_buf) free(jpg_buf);
