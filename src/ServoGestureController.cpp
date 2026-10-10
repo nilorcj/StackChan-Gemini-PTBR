@@ -376,14 +376,17 @@ void ServoGestureController::issueStep(const Step& step) {
   int rawX = step.relative ? anchorX_ + step.x : step.x;
   int rawY = step.relative ? anchorY_ + step.y : step.y;
   int x = clampInt(rawX, kMinX, kMaxX);
-  int y = clampInt(rawY, kMinY, kMaxY);
+  int logicalY = rawY;
+  int physicalY = clampInt(logicalY + kPitchCalibrationOffset, kMinY, kMaxY);
   int speed = clampInt(step.speed, kMinSpeed, kMaxSpeed);
   Serial.printf("ServoGesture: step x=%d y=%d speed=%d hold=%u relative=%s\n",
-                x, y, speed, static_cast<unsigned>(step.holdMs), step.relative ? "yes" : "no");
-  Serial.printf("[DIAG:PITCH] ISSUE_STEP anchorY=%d stepY=%d rawY=%d finalY=%d speed=%d relative=%s\n",
-                anchorY_, step.y, rawY, y, speed, step.relative ? "yes" : "no");
-  Serial.printf("[DIAG:PITCH] BSP PITCH COMMAND y=%d speed=%d\n", y, speed);
-  M5StackChan.Motion.move(x, y, speed);
+                x, logicalY, speed, static_cast<unsigned>(step.holdMs), step.relative ? "yes" : "no");
+  Serial.printf("[DIAG:PITCH] ISSUE_STEP anchorY=%d stepY=%d rawY=%d speed=%d relative=%s\n",
+                anchorY_, step.y, rawY, speed, step.relative ? "yes" : "no");
+  Serial.printf("[DIAG:PITCH] logicalY=%d offset=%d physicalY=%d\n",
+                logicalY, kPitchCalibrationOffset, physicalY);
+  Serial.printf("[DIAG:PITCH] BSP PITCH COMMAND y=%d speed=%d\n", physicalY, speed);
+  M5StackChan.Motion.move(x, physicalY, speed);
 }
 
 int ServoGestureController::clampInt(int value, int lo, int hi) {
