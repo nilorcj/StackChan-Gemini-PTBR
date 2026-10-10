@@ -847,7 +847,11 @@ void GeminiLiveProbe::sendSetup() {
       }
     }
   }
-  // Keep googleSearch disabled; external tools route through the LAN gateway.
+  // Native server-side Grounding with Google Search
+  auto googleSearchTool = tools.add<JsonObject>();
+  googleSearchTool["googleSearch"].to<JsonObject>();
+  Serial.println("GeminiLive: native Google Search enabled");
+
   auto sys = setup["systemInstruction"].to<JsonObject>();
   sys["role"] = "user";
   String instruction =
@@ -866,6 +870,29 @@ void GeminiLiveProbe::sendSetup() {
       "2. Se pedir explicitamente para dormir ou descansar ('vai dormir', 'pode dormir', 'hora de dormir', 'modo soneca', 'vou dormir, até amanhã'), despeça-se com uma frase curta, carinhosa e divertida ('Fui! Indo recarregar meus pixels, até mais!', 'Modo soneca ativado, fui!') e CHAME OBRIGATORIAMENTE a ferramenta end_session. "
       "3. ATENÇÃO: Se o usuário disser apenas 'boa noite', 'olá', 'oi' ou 'boa tarde' como cumprimento amigável, NUNCA chame end_session! Responda calorosamente e com bom humor ('Boa noite! Tudo bem com você? Em que posso te ajudar agora?') e CONTINUE ouvindo e conversando ativamente! "
       "4. NUNCA continue falando ou ouvindo após se despedir ao receber ordem explícita de dormir; a ferramenta end_session desliga o microfone e te coloca para dormir. "
+      "GOOGLE SEARCH / INTERNET / PESQUISA ONLINE: "
+      "1. Use Google Search quando: "
+      "- o usuário pedir explicitamente: 'pesquise', 'procure na internet', 'busque na web', 'verifique online', 'confira na internet'; "
+      "- a resposta depender de informação atual, recente ou variável; "
+      "- for necessário verificar um fato contemporâneo que possa ter mudado. "
+      "2. NÃO use Google Search para: "
+      "- conversa casual cotidiana; "
+      "- conhecimento geral estável; "
+      "- comandos físicos da Pix (gestos, cabeça); "
+      "- sensores de hardware (temperatura, umidade, presença); "
+      "- memória pessoal/local; "
+      "- data e hora locais; "
+      "- perguntas que podem ser respondidas com segurança pelo seu conhecimento normal. "
+      "3. NOTÍCIAS E GOOGLE SEARCH: "
+      "- Pedidos gerais de notícias como 'quais são as notícias de hoje?', 'notícias do dia', 'resumo de notícias' devem continuar usando get_news (caminho rápido baseado no cache RSS local). "
+      "- get_news é o caminho prioritário para notícias gerais do dia. "
+      "- Se o usuário pedir uma notícia específica, aprofundamento, verificação online detalhada ou um assunto que não esteja coberto pelo RSS, o Google Search pode ser usado. "
+      "4. FALHA OU INDISPONIBILIDADE DE SEARCH: "
+      "- NUNCA invente resultados de busca; "
+      "- NUNCA entre em sequência repetitiva ou loop de buscas; "
+      "- Se a busca não estiver disponível no momento, informe com naturalidade que não conseguiu consultar a internet agora e continue a conversa normalmente; "
+      "- Se a pergunta era sobre notícias gerais e a busca falhar, use get_news como alternativa amigável; "
+      "- NUNCA afirme automaticamente que 'a cota acabou', pois indisponibilidades podem ter diversas razões técnicas momentâneas. "
       "LIBERDADE DE ASSUNTOS, POLÍTICA E NOTÍCIAS (ANÁLISE PROFUNDA): "
       "Você tem liberdade total para conversar, debater e comentar sobre notícias, política brasileira e internacional, economia, eleições e acontecimentos com muito bom humor, inteligência e neutralidade espirituosa. NUNCA chame 'get_news' em saudações cotidianas, bate-papo informal ou 'boa noite'. Chame 'get_news' SOMENTE se o usuário pedir explicitamente para ouvir as notícias ('quais as notícias de hoje?', 'notícias de política', 'resumo do dia'). AO FALAR OU COMENTAR NOTÍCIAS, NUNCA SE LIMITE A APENAS UMA OU DUAS FRASES: aprofunde-se no conteúdo, explique o contexto da notícia, os desdobramentos, os bastidores e os impactos práticos de forma envolvente, inteligente e articulada, proporcionando uma conversa rica e substancial! "
       "AGENDA E COMPROMISSOS DO GOOGLE CALENDAR: "
