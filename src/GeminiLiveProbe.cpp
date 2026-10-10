@@ -2064,6 +2064,61 @@ void GeminiLiveProbe::handleMessage(uint8_t* payload, size_t length) {
 
   JsonVariant serverContent = doc["serverContent"];
 
+  // ── Phase 1a: Native Google Search / Grounding detection ─────────────────
+  JsonVariant gm = serverContent["groundingMetadata"];
+  if (gm.isNull()) gm = serverContent["grounding_metadata"];
+  if (gm.isNull()) gm = serverContent["modelTurn"]["groundingMetadata"];
+  if (gm.isNull()) gm = serverContent["modelTurn"]["grounding_metadata"];
+  if (gm.isNull()) gm = doc["groundingMetadata"];
+  if (gm.isNull()) gm = doc["grounding_metadata"];
+
+  if (!gm.isNull()) {
+    JsonArray queries = gm["webSearchQueries"].as<JsonArray>();
+    if (queries.isNull()) queries = gm["web_search_queries"].as<JsonArray>();
+
+    JsonArray chunks = gm["groundingChunks"].as<JsonArray>();
+    if (chunks.isNull()) chunks = gm["grounding_chunks"].as<JsonArray>();
+
+    JsonArray supports = gm["groundingSupports"].as<JsonArray>();
+    if (supports.isNull()) supports = gm["grounding_supports"].as<JsonArray>();
+
+    JsonVariant sep = gm["searchEntryPoint"];
+    if (sep.isNull()) sep = gm["search_entry_point"];
+
+    size_t qCount = queries.isNull() ? 0 : queries.size();
+    size_t chunkCount = chunks.isNull() ? 0 : chunks.size();
+    size_t supportCount = supports.isNull() ? 0 : supports.size();
+    bool hasSep = !sep.isNull();
+
+    if (qCount > 0 || chunkCount > 0 || supportCount > 0 || hasSep) {
+      Serial.println("[SEARCH] native Google Search used");
+      Serial.println("[SEARCH:GROUNDING] detected");
+      if (qCount > 0) {
+        String qStr = "";
+        for (JsonVariantConst q : queries) {
+          const char* qs = q.as<const char*>();
+          if (qs && qs[0]) {
+            if (qStr.length() > 0) qStr += ", ";
+            qStr += qs;
+          }
+        }
+        if (qStr.length() > 120) {
+          qStr = qStr.substring(0, 117) + "...";
+        }
+        Serial.printf("[SEARCH:GROUNDING] queries=%s\n", qStr.c_str());
+      }
+      if (chunkCount > 0) {
+        Serial.printf("[SEARCH:GROUNDING] chunks=%u\n", static_cast<unsigned>(chunkCount));
+      }
+      if (supportCount > 0) {
+        Serial.printf("[SEARCH:GROUNDING] supports=%u\n", static_cast<unsigned>(supportCount));
+      }
+      if (hasSep) {
+        Serial.println("[SEARCH:GROUNDING] searchEntryPoint present");
+      }
+    }
+  }
+
   // ── Phase 1b: Cloud VAD activity detection ───────────────────────────────
   const char* interimText = serverContent["interimInputTranscription"]["text"];
   if (!interimText) interimText = serverContent["interim_input_transcription"]["text"];
