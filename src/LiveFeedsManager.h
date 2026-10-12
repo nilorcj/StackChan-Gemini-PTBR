@@ -38,6 +38,7 @@ class LiveFeedsManager {
   struct LiveFeedsSnapshot {
     WeatherData weather;
     char usdBrl[8] = "5.18";
+    bool usdBrlValid = false;
     char currentNewsHeadline[128] = {0};
     NewsItem cachedNews[kMaxCachedNews];
     uint8_t cachedNewsCount = 0;
@@ -148,7 +149,7 @@ class LiveFeedsManager {
   bool isBootDeadlineExpired() const;
   void abortBootPrefetchAndPublish(const char* reason);
   bool canStartRequest() const;
-  void fetchWeather(WeatherData& outWeather);
-  void fetchCurrency(char* outUsdBrl);
+  bool fetchWeather(WeatherData& outWeather);
+  bool fetchCurrency(char* outUsdBrl);
   void fetchNews(NewsItem* outNews, uint8_t& outCount, char* outHeadline);
 };

@@ -54,6 +54,8 @@ String GeminiToolBridge::functionDeclarationsJson() {
   newsProps["limit"]["maximum"] = 5;
   noArgTool("refresh_news_feeds", "Forca a atualizacao imediata dos feeds RSS de noticias do G1 e clima pela internet. Use quando o usuario pedir para atualizar ou buscar noticias novas.");
   noArgTool("get_daily_agenda", "Consulta a agenda do Google Calendar do usuario para hoje e amanha. Use sempre que o usuario perguntar sobre agenda, compromissos de hoje, de amanha ou proximo compromisso, reunioes, afazeres ou horarios. Retorna os compromissos para que voce responda de forma calorosa, organica e humana.");
+  noArgTool("get_weather", "Le o clima atual de Brasilia-DF (temperatura, umidade, vento) do cache local da Pix, sem acessar a internet. Use PRIMEIRO quando o usuario perguntar sobre clima, tempo, calor ou temperatura la fora em Brasilia. Nao confundir com get_sensor_readings (sensor interno da mesa).");
+  noArgTool("get_currency", "Le a cotacao USD/BRL (dolar em reais) do cache local da Pix, sem acessar a internet. Use PRIMEIRO quando o usuario perguntar sobre a cotacao do dolar.");
   noArgTool("ping_gateway", "Check that the home-server StackChan Tool Gateway is reachable.");
   noArgTool("get_server_time", "Get current Unix time from the home server running the gateway.");
   noArgTool("ha_get_light_states", "Get Home Assistant states for StackChan-allowlisted lights.");
@@ -437,6 +439,46 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
     response["cached_items_count"] = snap.cachedNewsCount;
     response["message"] = "Uma atualizacao em segundo plano foi solicitada. O cache atual continua valido e disponivel; use get_news para consultar as noticias ja armazenadas.";
     response["instruction"] = "Se o usuario pedir uma noticia especifica que nao conste no cache retornado por get_news, informe apenas que ela nao consta no snapshot atual, sem afirmar que o sistema esta travado ou indisponivel.";
+    return LocalStatus::Handled;
+  }
+
+  if (name == "get_weather" || name == "get_currency") {
+    // Cache-only: reads the snapshot already published by LiveFeedsManager. No HTTP here.
+    const bool isWeather = (name == "get_weather");
+    response["source"] = "local_cache";
+    if (!liveFeeds_) {
+      response["ok"] = false;
+      response["error"] = "cache_unavailable";
+      response["message"] = "Cache local indisponivel no momento.";
+      return LocalStatus::Handled;
+    }
+    LiveFeedsManager::LiveFeedsSnapshot snap = liveFeeds_->getSnapshot();
+    uint32_t stampMs = isWeather ? snap.lastWeatherUpdatedMs : snap.lastUsdUpdatedMs;
+    bool hasData = isWeather ? snap.weather.valid : snap.usdBrlValid;
+
+    if (!hasData) {
+      response["ok"] = false;
+      response["error"] = "cache_not_ready";
+      response["message"] = isWeather
+          ? "O clima ainda nao foi carregado no cache local. Se o usuario precisar agora, pode usar Google Search."
+          : "A cotacao ainda nao foi carregada no cache local. Se o usuario precisar agora, pode usar Google Search.";
+      return LocalStatus::Handled;
+    }
+
+    response["ok"] = true;
+    if (stampMs > 0) {
+      response["atualizado_ha_min"] = (millis() - stampMs) / 60000UL;
+    }
+    if (isWeather) {
+      response["cidade"] = snap.weather.city;
+      response["temperatura_c"] = snap.weather.temp;
+      response["umidade_pct"] = snap.weather.humidity;
+      response["vento_kmh"] = snap.weather.wind;
+    } else {
+      response["par"] = "USD/BRL";
+      response["cotacao"] = snap.usdBrl;
+    }
+    response["instrucao"] = "Dados do cache local (atualizado periodicamente em segundo plano). Responda com eles; so use Google Search se o usuario pedir algo mais especifico ou mais atual.";
     return LocalStatus::Handled;
   }
 

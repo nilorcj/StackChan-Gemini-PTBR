@@ -501,12 +501,14 @@ void LiveFeedsManager::workerTaskLoop() {
           Serial.println("[BOOT_PREFETCH] weather start");
         }
         Serial.println("[LiveFeedsWorker] Step 2/3: Fetching Weather...");
-        fetchWeather(localSnapshot_.weather);
-        localSnapshot_.lastWeatherUpdatedMs = millis();
+        bool weatherOk = fetchWeather(localSnapshot_.weather);
+        if (weatherOk) {
+          localSnapshot_.lastWeatherUpdatedMs = millis();
+        }
         if (isBoot) {
           uint32_t elapsed = millis() - t0;
           Serial.printf("[BOOT_PREFETCH] weather end status=%s elapsed=%u ms\n",
-                        localSnapshot_.weather.valid ? "OK" : "FAILED",
+                        weatherOk ? "OK" : "FAILED",
                         static_cast<unsigned>(elapsed));
         }
 
@@ -540,12 +542,15 @@ void LiveFeedsManager::workerTaskLoop() {
           Serial.println("[BOOT_PREFETCH] usd start");
         }
         Serial.println("[LiveFeedsWorker] Step 3/3: Fetching USD/BRL currency...");
-        fetchCurrency(localSnapshot_.usdBrl);
-        localSnapshot_.lastUsdUpdatedMs = millis();
+        bool usdOk = fetchCurrency(localSnapshot_.usdBrl);
+        if (usdOk) {
+          localSnapshot_.usdBrlValid = true;
+          localSnapshot_.lastUsdUpdatedMs = millis();
+        }
         if (isBoot) {
           uint32_t elapsed = millis() - t0;
           Serial.printf("[BOOT_PREFETCH] usd end status=%s elapsed=%u ms\n",
-                        (localSnapshot_.usdBrl[0] != '\0' && strcmp(localSnapshot_.usdBrl, "5.18") != 0) ? "OK" : "DEFAULT",
+                        localSnapshot_.usdBrlValid ? "OK" : "DEFAULT",
                         static_cast<unsigned>(elapsed));
         }
 
@@ -603,12 +608,13 @@ void LiveFeedsManager::workerTaskLoop() {
   }
 }
 
-void LiveFeedsManager::fetchWeather(WeatherData& outWeather) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  if (TlsArbiter::instance().isGeminiActive()) return;
+bool LiveFeedsManager::fetchWeather(WeatherData& outWeather) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (TlsArbiter::instance().isGeminiActive()) return false;
   RequestInFlightGuard guard(requestInFlight_);
   HTTPClient http;
   http.setTimeout(kHttpTimeoutMs);
+  bool success = false;
   if (http.begin("http://api.open-meteo.com/v1/forecast?latitude=-15.7801&longitude=-47.9292&current=temperature_2m,relative_humidity_2m,wind_speed_10m&timezone=America%2FSao_Paulo")) {
     int code = http.GET();
     if (code == HTTP_CODE_OK) {
@@ -620,20 +626,23 @@ void LiveFeedsManager::fetchWeather(WeatherData& outWeather) {
         outWeather.wind = doc["current"]["wind_speed_10m"] | outWeather.wind;
         outWeather.valid = true;
         Serial.printf("[LiveFeedsWorker] Weather Brasilia: temp=%.1fC hum=%.1f%%\n", outWeather.temp, outWeather.humidity);
+        success = true;
       }
     } else {
       Serial.printf("[LiveFeedsWorker] Weather HTTP error: %d\n", code);
     }
     http.end();
   }
+  return success;
 }
 
-void LiveFeedsManager::fetchCurrency(char* outUsdBrl) {
-  if (WiFi.status() != WL_CONNECTED) return;
-  if (TlsArbiter::instance().isGeminiActive()) return;
+bool LiveFeedsManager::fetchCurrency(char* outUsdBrl) {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  if (TlsArbiter::instance().isGeminiActive()) return false;
   RequestInFlightGuard guard(requestInFlight_);
   HTTPClient http;
   http.setTimeout(kHttpTimeoutMs);
+  bool success = false;
   if (http.begin("http://open.er-api.com/v6/latest/USD")) {
     int code = http.GET();
     if (code == HTTP_CODE_OK) {
@@ -644,6 +653,7 @@ void LiveFeedsManager::fetchCurrency(char* outUsdBrl) {
         if (rate > 1.0f) {
           snprintf(outUsdBrl, 8, "%.2f", rate);
           Serial.printf("[LiveFeedsWorker] USD/BRL = %s\n", outUsdBrl);
+          success = true;
         }
       }
     } else {
@@ -651,6 +661,7 @@ void LiveFeedsManager::fetchCurrency(char* outUsdBrl) {
     }
     http.end();
   }
+  return success;
 }
 
 namespace {
