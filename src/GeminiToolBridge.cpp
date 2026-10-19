@@ -127,6 +127,16 @@ String GeminiToolBridge::functionDeclarationsJson() {
   rclProps["query"]["type"] = "string";
   rclProps["query"]["description"] = "Short label/query, e.g. 'PIN', 'door code', 'wifi password'. Empty means latest private memory.";
 
+  auto webSearch = arr.add<JsonObject>();
+  webSearch["name"] = "web_search";
+  webSearch["description"] = "Realiza busca na web atraves do ToolGateway. Use quando o usuario pedir explicitamente 'teste o gateway' ou solicitar busca web via gateway.";
+  auto wsParams = webSearch["parameters"].to<JsonObject>();
+  wsParams["type"] = "object";
+  auto wsProps = wsParams["properties"].to<JsonObject>();
+  wsProps["query"]["type"] = "string";
+  wsProps["query"]["description"] = "Termo de busca na web.";
+  wsParams["required"].add("query");
+
   if (gateway_.isEnabled()) {
     auto askHermes = arr.add<JsonObject>();
     askHermes["name"] = "ask_hermes";
@@ -273,7 +283,12 @@ String GeminiToolBridge::handleFunctionCall(const String& name, const JsonVarian
     }
   }
 
-  auto gatewayResult = gateway_.callTool(name, args, sessionId);
+  String gatewayToolName = name;
+  if (name == "get_daily_agenda") {
+    gatewayToolName = "get_agenda";
+  }
+
+  auto gatewayResult = gateway_.callTool(gatewayToolName, args, sessionId);
   if (gatewayResult.ok) return gatewayResult.body;
   return errorJson(gatewayResult.error.length() ? gatewayResult.error : "gateway_call_failed",
                    gatewayResult.body.length() ? gatewayResult.body : "Tool gateway call failed");
@@ -479,24 +494,6 @@ GeminiToolBridge::LocalStatus GeminiToolBridge::handleLocal(
       response["cotacao"] = snap.usdBrl;
     }
     response["instrucao"] = "Dados do cache local (atualizado periodicamente em segundo plano). Responda com eles; so use Google Search se o usuario pedir algo mais especifico ou mais atual.";
-    return LocalStatus::Handled;
-  }
-
-  if (name == "get_daily_agenda") {
-    Serial.printf("[DIAG:get_daily_agenda:pre] task='%s' stackHWM=%u freeHeap=%u minFreeHeap=%u maxAllocHeap=%u\n",
-                  pcTaskGetName(nullptr),
-                  static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)),
-                  static_cast<unsigned>(ESP.getFreeHeap()),
-                  static_cast<unsigned>(ESP.getMinFreeHeap()),
-                  static_cast<unsigned>(ESP.getMaxAllocHeap()));
-    if (googleCalendar_) {
-      String agendaJson = googleCalendar_->fetchDailyAgendaJson();
-      deserializeJson(response, agendaJson);
-    } else {
-      response["ok"] = false;
-      response["error"] = "calendar_client_not_attached";
-      response["message"] = "Modulo de agenda nao conectado.";
-    }
     return LocalStatus::Handled;
   }
 

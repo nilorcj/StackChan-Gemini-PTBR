@@ -891,6 +891,8 @@ void GeminiLiveProbe::sendSetup() {
       "- Clima/tempo/temperatura lá fora em Brasília: chame get_weather PRIMEIRO. "
       "- Cotação do dólar (USD/BRL): chame get_currency PRIMEIRO. "
       "- Use Google Search para isso somente se a ferramenta local retornar erro/cache indisponível, se o usuário pedir outra cidade/outra moeda, ou pedir explicitamente um valor mais atual ou verificação online. "
+      "3c. TESTE DO TOOLGATEWAY: "
+      "- Quando o usuário disser explicitamente 'teste o gateway', use web_search. "
       "4. FALHA OU INDISPONIBILIDADE DE SEARCH: "
       "- NUNCA invente resultados de busca; "
       "- NUNCA entre em sequência repetitiva ou loop de buscas; "
