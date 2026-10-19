@@ -5,7 +5,7 @@
 [![M5Stack CoreS3](https://img.shields.io/badge/Hardware-M5Stack%20CoreS3-blue.svg)](https://m5stack.com/)
 [![Gemini Live](https://img.shields.io/badge/AI-Google%20Gemini%20Live-4285F4.svg)](https://ai.google.dev/)
 
-Firmware avançado para o robô **M5Stack CoreS3 Stack-chan** com conversação por voz em tempo real (**Google Gemini Live API**) em **Português do Brasil (PT-BR)**, integração com o ecossistema de **M5Stack Units** via multiplexador I2C **PaHub**, e sistema inteligente de conversação armada por gestos e toque (**Gesture-Armed Listening**).
+Firmware avançado para o robô **M5Stack CoreS3 Stack-chan** com conversação por voz em tempo real (**Google Gemini Live API**) em **Português do Brasil (PT-BR)**, integração com o ecossistema de **M5Stack Units** via multiplexador I2C **PaHub**, sistema inteligente de conversação armada por gestos e toque (**Gesture-Armed Listening**) e integração com ferramentas externas via **ToolGateway assinado com HMAC-SHA256**.
 
 ---
 
@@ -13,7 +13,7 @@ Firmware avançado para o robô **M5Stack CoreS3 Stack-chan** com conversação 
 
 Este projeto foi desenvolvido com base no firmware experimental inicial de [taranton/stackchan-gemini-firmware](https://github.com/taranton/stackchan-gemini-firmware), que estabeleceu a conexão inicial de voz com Gemini Live no ESP32-S3.
 
-A partir dessa base, este repositório traz uma reformulação arquitetural profunda: suporte a periféricos modulares externos (Units M5Stack), eliminação de falsos disparos de voz com detecção de gestos ToF, localização completa em PT-BR e extensivas otimizações de performance no ESP32-S3.
+A partir dessa base, este repositório traz uma reformulação arquitetural profunda: suporte a periféricos modulares externos (Units M5Stack), eliminação de falsos disparos de voz com detecção de gestos ToF, localização completa em PT-BR, cache local de feeds e integração externa enxuta via ToolGateway no ESP32-S3.
 
 ---
 
@@ -45,6 +45,116 @@ Expansão da Porta A I2C do CoreS3 através do **Unit PaHub** (PCA9548AP / TCA95
 
 ---
 
+## 🔌 ToolGateway, Busca Web e Agenda
+
+A arquitetura atual separa claramente as **ferramentas locais** (que rodam diretamente na Pix sem bloqueio de rede durante a fala) das **ferramentas externas** (que são delegadas ao ToolGateway remoto em Cloudflare Worker).
+
+* **Local na Pix:**
+  * Sensores físicos (`get_sensor_readings`) e telemetria do robô (`get_robot_status`);
+  * Data e hora local oficial sincronizada via NTP/RTC (`get_current_datetime`);
+  * Clima de Brasília via cache local (`get_weather`);
+  * Cotação USD/BRL via cache local (`get_currency`);
+  * Manchetes de notícias via cache RSS local (`get_news`); a atualização explícita dos feeds (`refresh_news_feeds`) acessa a internet para renovar esse cache;
+  * Memória persistente e privada no microSD (`search_memory`, `remember_fact`, `remember_private_memory`, `recall_private_memory`);
+  * Comandos físicos e de sessão (`servo_gesture`, `head_motion`, `set_emotion`, `set_speaker_volume`, `look_with_camera`, `end_session`).
+* **Externo via ToolGateway:**
+  * Busca web atualizada (`web_search`);
+  * Agenda do Google Calendar (`get_daily_agenda` → `get_agenda`).
+
+**Fluxo de busca web:**
+```text
+Pix → ToolGatewayClient → POST /v2/call → Cloudflare Worker → TinyFish → resposta para o Gemini Live
+```
+
+**Fluxo da agenda:**
+```text
+Pix → get_daily_agenda → GeminiToolBridge → mapeamento interno para get_agenda → POST /v2/call → Cloudflare Worker → Google Calendar ICS → resposta estruturada para o Gemini
+```
+> **Nota de compatibilidade:** O modelo Gemini Live continua vendo e chamando a função declarada `get_daily_agenda`, mas o firmware (`GeminiToolBridge`) roteia internamente a chamada para a tool `get_agenda` no ToolGateway.
+
+### Autenticação do ToolGateway (HMAC-SHA256)
+
+O endpoint produtivo utilizado pelo firmware é:
+```text
+POST /v2/call
+```
+
+Cada requisição enviada pela Pix é assinada com **HMAC-SHA256** sobre uma string canônica composta por:
+* método HTTP (`POST`);
+* path (`/v2/call`);
+* timestamp Unix atual em segundos;
+* nonce aleatório de 32 caracteres hexadecimais;
+* body JSON exato da requisição.
+
+A requisição inclui os cabeçalhos HTTP de autenticação:
+* `X-Timestamp`
+* `X-Nonce`
+* `X-Signature`
+
+A chave compartilhada fica armazenada no cartão microSD da Pix em:
+```text
+/app/StackChan/secrets/gateway_hmac_key.txt
+```
+* Esse arquivo deve conter exatamente uma chave de **64 caracteres hexadecimais**.
+* O mesmo segredo deve estar configurado no ambiente do Cloudflare Worker como `HMAC_SHARED_KEY`.
+* **Importante sobre segurança de transporte:** O HMAC autentica a requisição e protege sua integridade. O timestamp e o nonce ajudam a mitigar requisições antigas ou repetidas, mas o HMAC por si só não criptografa o conteúdo transportado quando o gateway é acessado por HTTP nem elimina completamente ataques de replay dentro da janela de validade aceita pelo servidor.
+* **Legado:** O arquivo `/app/StackChan/secrets/gateway_token.txt` (Bearer token) é legado e **não é usado** pelo caminho produtivo atual de `POST /v2/call`.
+
+### Busca Web Atualizada
+
+* O Gemini Live pode acionar a ferramenta `web_search` quando precisa consultar informações externas atualizadas ou quando solicitado pelo usuário.
+* O firmware envia a consulta para o ToolGateway via `POST /v2/call`.
+* O Cloudflare Worker executa a pesquisa utilizando a API **TinyFish** e devolve resultados estruturados contendo **título, URL, data, site e snippet** (atualmente até **5 resultados** por consulta).
+* Esse fluxo via ToolGateway substitui a dependência do Google Search Grounding como caminho produtivo principal de `web_search` na Pix (embora código/logs relacionados a Google Grounding ainda existam no projeto, ele não é o caminho produtivo atual de `web_search`).
+
+### Google Calendar via ToolGateway
+
+* No fluxo produtivo atual, a agenda **não é mais baixada nem processada diretamente pelo ESP32-S3 da Pix**, evitando consumo excessivo de RAM/CPU e conexões TLS pesadas durante a sessão de voz.
+* O Cloudflare Worker acessa o feed privado do Google Calendar através do segredo de ambiente `CALENDAR_ICS_URL`.
+* O firmware **não precisa** receber a URL privada do calendário (`calendar_url.txt`) no microSD para esse fluxo.
+* O Cloudflare Worker suporta os períodos `today`, `tomorrow` e `upcoming` no fuso `America/Sao_Paulo`. Como a função atualmente declarada ao Gemini é `get_daily_agenda` sem parâmetros e o firmware a converte em `get_agenda`, sem `period` explícito o Worker utiliza `upcoming` como padrão — retornando compromissos de hoje, amanhã e próximos eventos identificados por dia.
+* O parser ICS do Worker trata:
+  * eventos únicos;
+  * eventos de dia inteiro (`VALUE=DATE`);
+  * recorrências `DAILY`, `WEEKLY`, `MONTHLY` e `YEARLY`;
+  * modificadores `COUNT`, `UNTIL`, `INTERVAL`, `BYDAY` e `BYMONTHDAY`;
+  * exceções e cancelamentos: `EXDATE`, `RECURRENCE-ID` e `STATUS:CANCELLED`.
+* O processamento foi otimizado especificamente para calendários grandes, filtrando blocos relevantes sem expandir todo o histórico desnecessariamente — validado com um calendário ICS real de aproximadamente **2 MB** e milhares de `VEVENT`s dentro do orçamento de CPU do Cloudflare Worker.
+
+### Componente Externo Cloudflare Worker
+
+> **Importante:** O código-fonte do Cloudflare Worker **não faz parte deste repositório de firmware**.
+
+Quem instalar esta versão do firmware e desejar utilizar `web_search` e a agenda via Google Calendar precisa fornecer ou configurar um ToolGateway próprio compatível com o contrato `POST /v2/call`.
+
+Na implantação utilizada e validada neste projeto, o Worker requer os seguintes segredos configurados no seu ambiente:
+* `HMAC_SHARED_KEY`
+* `TINYFISH_API_KEY`
+* `CALENDAR_ICS_URL`
+
+### Arquitetura Resumida
+
+| Recurso | Onde executa | Dependência externa |
+| :--- | :--- | :--- |
+| **Sensores** (`get_sensor_readings`) | Pix | nenhuma |
+| **Clima** (`get_weather`) | cache local na Pix | atualização de feed já existente |
+| **USD/BRL** (`get_currency`) | cache local na Pix | atualização de feed já existente |
+| **Notícias** (`get_news`) | Pix / cache RSS | feeds RSS |
+| **Busca web** (`web_search`) | Cloudflare ToolGateway | TinyFish |
+| **Agenda** (`get_daily_agenda` → `get_agenda`) | Cloudflare ToolGateway | Google Calendar ICS |
+| **Gemini Live** | Pix + Google | Gemini Live API |
+| **Memória** (`search_memory`, `remember_*`, `recall_*`) | Pix / microSD | nenhuma para memória local |
+
+### Baseline Validado
+
+* **Baseline funcional do firmware validado:** `383d6e10435b7127f8724487f62943f806dea650`
+* **Commits principais desta evolução:**
+  * `80d55d5` — `feat(tools): use local weather and currency caches`
+  * `fa6e21b` — `feat(gateway): add HMAC-SHA256 signing and migrate callTool to /v2/call`
+  * `383d6e1` — `feat(tools): route web search and agenda through ToolGateway`
+
+---
+
 ## 🛠️ Hardware Necessário
 
 * **Controlador:** [M5Stack CoreS3](https://docs.m5stack.com/en/core/CoreS3) (ESP32-S3).
@@ -68,18 +178,37 @@ cd M5-Stackchan-PT-BR-Units
 ```
 
 ### 2. Configurar o Cartão MicroSD
-Crie a estrutura de diretórios no cartão SD (veja detalhes em [docs/SD_LAYOUT.md](docs/SD_LAYOUT.md)):
+Crie a estrutura de diretórios no cartão SD (veja detalhes adicionais em [docs/SD_LAYOUT.md](docs/SD_LAYOUT.md)):
 ```text
 /app/StackChan/
 ├── config/
-│   └── runtime.json              # Copie de examples/runtime.example.json
+│   ├── runtime.json
+│   └── gateway.json
 ├── prompts/
-│   ├── system.txt                # Prompt de comportamento do assistente
-│   └── persona.txt               # Personalidade e tom de voz
+│   ├── system.txt
+│   └── persona.txt
 └── secrets/
-    ├── gemini_api_key.txt        # Sua chave da Google Gemini API
-    └── wifi_password.txt         # Senha da sua rede Wi-Fi (opcional se configurado no JSON)
+    ├── gemini_api_key.txt
+    ├── wifi_password.txt
+    └── gateway_hmac_key.txt
 ```
+
+* `gateway_hmac_key.txt` (chave hexadecimal de 64 caracteres) **só é necessário se `gateway_enabled=true`**.
+* `gateway_token.txt` não é requisito da arquitetura atual (`/v2/call` usa assinatura HMAC-SHA256).
+* `calendar_url.txt` no microSD não é requisito para a agenda atual via Cloudflare ToolGateway (a URL ICS fica configurada como segredo `CALENDAR_ICS_URL` no Worker).
+
+#### Configuração do Gateway (`gateway.json` ou `runtime.json`)
+Para habilitar o ToolGateway, configure os campos abaixo (em `/app/StackChan/config/gateway.json` ou diretamente em `runtime.json`):
+```json
+{
+  "gateway_enabled": true,
+  "gateway_base_url": "http://SEU_WORKER_OU_GATEWAY",
+  "robot_id": "pix"
+}
+```
+* `gateway_base_url` aponta para o endereço do Worker/gateway configurado pelo usuário (sem barra final necessária);
+* O firmware acrescenta automaticamente o sufixo `/v2/call` ao invocar ferramentas externas;
+* O relógio do ESP32 precisa estar sincronizado via NTP/RTC (`time(nullptr)` válido) para gerar o `X-Timestamp` aceito na validação HMAC.
 
 ### 3. Compilar e Gravar o Firmware
 Certifique-se de ter o [PlatformIO Core](https://platformio.org/) instalado:
@@ -160,9 +289,9 @@ Com a Pix conectada ao seu Wi-Fi e seu computador/smartphone no mesmo roteador:
 O Web Viewer oferece controle total através de abas:
 * **Status:** Telemetria em tempo real de bateria, memória livre (Heap e PSRAM), estado do Gemini Live (pronto, ouvindo, falando), chunks de áudio e status dos microfones.
 * **Runtime:** Configuração do volume do alto-falante, ganho do microfone (1 a 24), filtro de ruído, modelo de IA (`geminiModel`), voz sintetizada (`geminiVoice`), fuso horário (`timezoneOffset`) e nome da rede Wi-Fi (`Wi-Fi SSID`).
-* **Secrets:** Armazenamento seguro de chaves e senhas (senha do Wi-Fi, Gemini API Key e URL da agenda do Google Calendar `.ics`). Os segredos são gravados no MicroSD e **nunca são exibidos de volta pelo navegador ou API**.
+* **Secrets:** Armazenamento de chaves e senhas no MicroSD (como senha do Wi-Fi e Gemini API Key; para o ToolGateway `/v2/call`, a chave compartilhada é lida de `/app/StackChan/secrets/gateway_hmac_key.txt`). Os segredos gravados no MicroSD **nunca são exibidos de volta pelo navegador ou API**.
 * **Security:** Configuração opcional de senha para proteger o painel web via HTTP Basic Auth (usuário padrão: `stackchan`). Se nenhuma senha for cadastrada, o painel permanece aberto na rede local.
-* **Gateway:** Teste e validação de ferramentas externas conectadas via Tool Gateway.
+* **Gateway:** Teste e configuração de integração com o ToolGateway.
 * **Prompts:** Adição de instruções de comportamento e personalidade adicionais à Pix.
 * **Memory:** Visualização de diálogos recentes, resumos periódicos e busca semântica no banco de memória local.
 

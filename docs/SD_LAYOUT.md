@@ -16,7 +16,9 @@ The firmware stores mutable runtime state on the SD card under `/app/StackChan/`
   secrets/
     gemini_api_key.txt
     wifi_password.txt
-    gateway_token.txt
+    gateway_hmac_key.txt
+    gateway_token.txt          # legacy (not used by POST /v2/call)
+    calendar_url.txt           # legacy (not required for ToolGateway agenda)
     web_password_sha256.txt
     meta.jsonl
   memory/
@@ -88,21 +90,33 @@ You can also edit prompts:
 
 ## Optional gateway setup
 
-Gateway integration is optional. Add `/app/StackChan/config/gateway.json` or set the equivalent fields in `runtime.json`:
+Gateway integration (`web_search` and Google Calendar agenda via external ToolGateway/Cloudflare Worker) is optional. Add `/app/StackChan/config/gateway.json` (see `examples/gateway.example.json`) or set the equivalent fields in `runtime.json`:
 
 ```json
 {
   "gateway_enabled": true,
-  "gateway_base_url": "http://YOUR_GATEWAY_HOST:8811/stackchan",
+  "gateway_base_url": "http://YOUR_GATEWAY_HOST",
   "robot_id": "stackchan"
 }
 ```
 
-If the gateway requires a token, store it in:
+### ToolGateway authentication (`POST /v2/call` + HMAC-SHA256)
+
+* The productive firmware path calls `POST /v2/call` on `gateway_base_url`.
+* Productive authentication uses **HMAC-SHA256** (`X-Timestamp`, `X-Nonce`, `X-Signature`). Store the shared secret separately on the microSD card in:
 
 ```text
-/app/StackChan/secrets/gateway_token.txt
+/app/StackChan/secrets/gateway_hmac_key.txt
 ```
+
+* `gateway_hmac_key.txt` is only required when `gateway_enabled` is `true` and must contain a **64-character hexadecimal** key matching the remote Worker/gateway `HMAC_SHARED_KEY`.
+* The ESP32 system clock must be synchronized (valid NTP/RTC time) so the firmware can generate a valid Unix timestamp for the HMAC signature.
+* **Transport note:** HMAC authenticates the request and protects its integrity, and the timestamp/nonce help mitigate stale or repeated requests, but HMAC by itself does **not** encrypt HTTP traffic or completely eliminate replay within the server's accepted timestamp window.
+
+### Legacy secret files
+
+* `/app/StackChan/secrets/gateway_token.txt` is **legacy** and is **not** used by the productive `POST /v2/call` HMAC flow.
+* `/app/StackChan/secrets/calendar_url.txt` is **legacy** from the previous local ICS implementation and is **not** required for the current ToolGateway agenda flow (the private Google Calendar ICS URL is configured on the remote Worker/server as `CALENDAR_ICS_URL`).
 
 ## Secrets policy
 
