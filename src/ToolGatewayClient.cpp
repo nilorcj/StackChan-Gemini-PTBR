@@ -1,4 +1,7 @@
 #include "ToolGatewayClient.h"
+#include <esp_system.h>
+#include <mbedtls/md.h>
+#include <time.h>
 
 bool ToolGatewayClient::begin(const Config& config) {
   config_ = config;
@@ -45,7 +48,7 @@ ToolGatewayClient::CallResult ToolGatewayClient::callTool(
     return r;
   }
 
-  return postJson(joinUrl("/call"), payload);
+  return postJsonSigned(joinUrl("/v2/call"), payload);
 }
 
 String ToolGatewayClient::defaultToolDeclarationsJson() const {
@@ -103,6 +106,9 @@ ToolGatewayClient::CallResult ToolGatewayClient::getJson(const String& url) {
   HTTPClient http;
   WiFiClient client;
   http.setTimeout(config_.timeoutMs);
+  if (config_.token.length() > 0) {
+    http.addHeader("Authorization", "Bearer " + config_.token);
+  }
   if (!http.begin(client, url)) {
     result.error = "http_begin_failed";
     return result;
@@ -134,6 +140,9 @@ ToolGatewayClient::CallResult ToolGatewayClient::postJson(const String& url, con
     return result;
   }
   http.addHeader("Content-Type", "application/json");
+  if (config_.token.length() > 0) {
+    http.addHeader("Authorization", "Bearer " + config_.token);
+  }
   int code = http.POST(payload);
   result.httpCode = code;
   if (code > 0) {
@@ -151,6 +160,101 @@ ToolGatewayClient::CallResult ToolGatewayClient::postJson(const String& url, con
   return result;
 }
 
+ToolGatewayClient::CallResult ToolGatewayClient::postJsonSigned(const String& url, const String& payload) {
+  CallResult result;
+
+  if (config_.hmacKey.length() != 64) {
+    result.ok = false;
+    result.httpCode = 0;
+    result.error = "hmac_key_invalid";
+    result.body = "{\"error\":\"hmac_key_invalid\"}";
+    return result;
+  }
+
+  time_t now = time(nullptr);
+  if (now < 1700000000) {
+    result.ok = false;
+    result.httpCode = 0;
+    result.error = "clock_not_synced";
+    result.body = "{\"error\":\"clock_not_synced\"}";
+    return result;
+  }
+
+  int schemeIdx = url.indexOf("://");
+  int pathStart = -1;
+  if (schemeIdx > 0) {
+    int hostStart = schemeIdx + 3;
+    int slashIdx = url.indexOf('/', hostStart);
+    if (slashIdx > hostStart) {
+      pathStart = slashIdx;
+    }
+  }
+  if (pathStart < 0) {
+    result.ok = false;
+    result.httpCode = 0;
+    result.error = "invalid_url_path";
+    result.body = "{\"error\":\"invalid_url_path\"}";
+    return result;
+  }
+
+  String path = url.substring(pathStart);
+  int qIdx = path.indexOf('?');
+  if (qIdx >= 0) path = path.substring(0, qIdx);
+  int hIdx = path.indexOf('#');
+  if (hIdx >= 0) path = path.substring(0, hIdx);
+  if (path.length() == 0 || path[0] != '/') {
+    result.ok = false;
+    result.httpCode = 0;
+    result.error = "invalid_url_path";
+    result.body = "{\"error\":\"invalid_url_path\"}";
+    return result;
+  }
+
+  String timestamp = String(static_cast<unsigned long>(now));
+  String nonce = generateNonce32();
+  String canonical = "POST\n" + path + "\n" + timestamp + "\n" + nonce + "\n" + payload;
+  String signature = computeHmacSha256Hex(config_.hmacKey, canonical);
+  if (signature.length() != 64) {
+    result.ok = false;
+    result.httpCode = 0;
+    result.error = "hmac_compute_failed";
+    result.body = "{\"error\":\"hmac_compute_failed\"}";
+    return result;
+  }
+  signature.toLowerCase();
+
+  HTTPClient http;
+  WiFiClient client;
+  http.setTimeout(config_.timeoutMs);
+  if (!http.begin(client, url)) {
+    result.error = "http_begin_failed";
+    return result;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Timestamp", timestamp);
+  http.addHeader("X-Nonce", nonce);
+  http.addHeader("X-Signature", signature);
+
+  int code = http.POST(payload);
+  result.httpCode = code;
+  if (code > 0) {
+    result.body = http.getString();
+    if (result.body.length() > config_.maxResponseBytes) {
+      result.body = result.body.substring(0, config_.maxResponseBytes);
+      result.error = "response_truncated";
+    }
+    result.ok = (code >= 200 && code < 300);
+  } else {
+    result.error = String("http_post_failed:") + String(code);
+  }
+  http.end();
+  if (!result.ok) {
+    Serial.printf("ToolGateway POST %s failed code=%d err=%s\n",
+                  path.c_str(), code, sanitizeForLog(result.error).c_str());
+  }
+  return result;
+}
+
 String ToolGatewayClient::sanitizeForLog(const String& input) const {
   String out = input;
   out.replace("Bearer ", "Bearer [REDACTED]");
@@ -158,4 +262,36 @@ String ToolGatewayClient::sanitizeForLog(const String& input) const {
   out.replace("password", "password[REDACTED]");
   out.replace("token", "token[REDACTED]");
   return out;
+}
+
+String ToolGatewayClient::computeHmacSha256Hex(const String& key, const String& data) {
+  const mbedtls_md_info_t* mdInfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+  if (!mdInfo) return String();
+
+  unsigned char hmacOutput[32];
+  int rc = mbedtls_md_hmac(
+      mdInfo,
+      reinterpret_cast<const unsigned char*>(key.c_str()),
+      key.length(),
+      reinterpret_cast<const unsigned char*>(data.c_str()),
+      data.length(),
+      hmacOutput);
+  if (rc != 0) return String();
+
+  char hexBuf[65];
+  for (int i = 0; i < 32; i++) {
+    snprintf(&hexBuf[i * 2], 3, "%02x", hmacOutput[i]);
+  }
+  hexBuf[64] = '\0';
+  return String(hexBuf);
+}
+
+String ToolGatewayClient::generateNonce32() {
+  uint32_t r0 = esp_random();
+  uint32_t r1 = esp_random();
+  uint32_t r2 = esp_random();
+  uint32_t r3 = esp_random();
+  char buf[33];
+  snprintf(buf, sizeof(buf), "%08x%08x%08x%08x", r0, r1, r2, r3);
+  return String(buf);
 }

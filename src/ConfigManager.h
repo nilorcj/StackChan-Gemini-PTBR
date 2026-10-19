@@ -44,10 +44,12 @@ class ConfigManager {
 
   bool hasGeminiApiKey() const;
   bool hasGatewayToken() const;
+  bool hasGatewayHmacKey() const;
   bool hasWifiPassword() const;
   bool hasCalendarUrl() const;
   String readGeminiApiKey() const;
   String readGatewayToken() const;
+  String readGatewayHmacKey() const;
   String readWifiPassword() const;
   String readCalendarUrl() const;
 

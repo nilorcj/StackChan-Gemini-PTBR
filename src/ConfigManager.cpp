@@ -10,6 +10,7 @@ constexpr const char* kSystemPromptPath = "/app/StackChan/prompts/system.txt";
 constexpr const char* kPersonaPromptPath = "/app/StackChan/prompts/persona.txt";
 constexpr const char* kGeminiKeyPath = "/app/StackChan/secrets/gemini_api_key.txt";
 constexpr const char* kGatewayTokenPath = "/app/StackChan/secrets/gateway_token.txt";
+constexpr const char* kGatewayHmacKeyPath = "/app/StackChan/secrets/gateway_hmac_key.txt";
 constexpr const char* kWifiPasswordPath = "/app/StackChan/secrets/wifi_password.txt";
 constexpr const char* kCalendarUrlPath = "/app/StackChan/secrets/calendar_url.txt";
 }
@@ -106,11 +107,27 @@ void ConfigManager::loadPrompts() {
 
 bool ConfigManager::hasGeminiApiKey() const { return fileExists(kGeminiKeyPath); }
 bool ConfigManager::hasGatewayToken() const { return fileExists(kGatewayTokenPath); }
+bool ConfigManager::hasGatewayHmacKey() const { return fileExists(kGatewayHmacKeyPath); }
 bool ConfigManager::hasWifiPassword() const { return fileExists(kWifiPasswordPath); }
 bool ConfigManager::hasCalendarUrl() const { return fileExists(kCalendarUrlPath); }
 
 String ConfigManager::readGeminiApiKey() const { return readTextFile(kGeminiKeyPath, 4096); }
 String ConfigManager::readGatewayToken() const { return readTextFile(kGatewayTokenPath, 2048); }
+String ConfigManager::readGatewayHmacKey() const {
+  String raw = readTextFile(kGatewayHmacKeyPath, 256);
+  raw.trim();
+  if (raw.length() != 64) {
+    return String();
+  }
+  for (size_t i = 0; i < 64; ++i) {
+    char c = raw[i];
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+      return String();
+    }
+  }
+  raw.toLowerCase();
+  return raw;
+}
 String ConfigManager::readWifiPassword() const { return readTextFile(kWifiPasswordPath, 2048); }
 String ConfigManager::readCalendarUrl() const { return readTextFile(kCalendarUrlPath, 2048); }
 
@@ -119,6 +136,8 @@ ToolGatewayClient::Config ConfigManager::gatewayConfig() const {
   cfg.enabled = config_.gatewayEnabled;
   cfg.baseUrl = config_.gatewayBaseUrl;
   cfg.robotId = config_.robotId;
+  cfg.token = readGatewayToken();
+  cfg.hmacKey = readGatewayHmacKey();
   cfg.timeoutMs = 8000;
   cfg.maxResponseBytes = 8192;
   return cfg;
@@ -146,6 +165,7 @@ String ConfigManager::redactedStatusJson() const {
   doc["gateway_enabled"] = config_.gatewayEnabled;
   doc["gateway_base_url"] = config_.gatewayBaseUrl;
   doc["gateway_token"] = hasGatewayToken() ? "set" : "missing";
+  doc["gateway_hmac_key"] = hasGatewayHmacKey() ? "set" : "missing";
   doc["web_enabled"] = config_.webEnabled;
   doc["speaker_volume"] = config_.speakerVolume;
   doc["mic_magnification"] = config_.micMagnification;

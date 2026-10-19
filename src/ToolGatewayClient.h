@@ -16,6 +16,8 @@ class ToolGatewayClient {
     uint32_t timeoutMs = 8000;
     size_t maxResponseBytes = 8192;
     bool enabled = false;  // keep disabled until Wi-Fi/config is wired.
+    String token = "";
+    String hmacKey = "";
   };
 
   struct CallResult {
@@ -36,6 +38,10 @@ class ToolGatewayClient {
   CallResult callTool(const String& toolName, const JsonVariantConst& arguments,
                       const String& sessionId = "");
 
+  // Crypto and nonce helpers
+  static String computeHmacSha256Hex(const String& key, const String& data);
+  static String generateNonce32();
+
   // Local static fallback for compile/runtime smoke tests when gateway is absent.
   String defaultToolDeclarationsJson() const;
 
@@ -45,5 +51,6 @@ class ToolGatewayClient {
   String joinUrl(const char* suffix) const;
   CallResult getJson(const String& url);
   CallResult postJson(const String& url, const String& payload);
+  CallResult postJsonSigned(const String& url, const String& payload);
   String sanitizeForLog(const String& input) const;
 };
