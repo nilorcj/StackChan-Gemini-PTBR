@@ -43,8 +43,11 @@ GoogleCalendarClient googleCalendar(configManager);
 volatile bool g_voice_toggle_requested = false;
 static uint8_t g_speaker_volume = 200;
 static constexpr uint32_t kIdleSleepMs = 120000; // 2 minutes desk idle before sleep (prevents premature sleeping)
+static constexpr uint32_t kDeepSleepMs = 300000; // 5 minutes total idle before deep sleep (TEST ONLY - NOT FINAL)
+static bool g_deep_sleep_in_progress = false;
 static constexpr uint32_t kPowerButtonLedOffHoldMs = 700;
 static uint32_t g_last_human_activity_ms = 0;
+static uint32_t g_last_deep_sleep_activity_ms = 0;
 static uint32_t g_power_button_pressed_ms = 0;
 static bool g_power_button_leds_off = false;
 static uint32_t g_last_unit_scan_ms = 0;
@@ -739,6 +742,12 @@ void setup() {
   Serial.printf("[DIAG:BOOT] setup entry millis=%lu\n", millis());
   esp_reset_reason_t rstReason = esp_reset_reason();
   Serial.printf("CoreS3 BOOT: reset_reason=%d\n", static_cast<int>(rstReason));
+  esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+  if (wakeCause == ESP_SLEEP_WAKEUP_EXT1) {
+    Serial.println("[DIAG:DEEP_SLEEP] wake cause=TOUCH/EXT1");
+  } else {
+    Serial.printf("[DIAG:DEEP_SLEEP] wake cause=%d\n", static_cast<int>(wakeCause));
+  }
   M5StackChan.begin();
   ConfigManager::applyTimezone(-3);
   if (M5.Rtc.isEnabled()) {
@@ -949,7 +958,40 @@ void setup() {
 
   // Gemini API key is loaded by ConfigManager as a secret and must never be printed.
   g_last_human_activity_ms = millis();
+  g_last_deep_sleep_activity_ms = g_last_human_activity_ms;
   Serial.printf("[DIAG:BOOT] setup exit millis=%lu g_last_human_activity_ms=%lu\n", millis(), g_last_human_activity_ms);
+}
+
+static void enterDeepSleep() {
+  if (g_deep_sleep_in_progress) return;
+  g_deep_sleep_in_progress = true;
+
+  Serial.printf("[DIAG:DEEP_SLEEP] entering last_human_act=%lu last_deep_sleep_act=%lu\n",
+                g_last_human_activity_ms, g_last_deep_sleep_activity_ms);
+
+  servoGestures.stop();
+  M5StackChan.Motion.setTorqueEnabled(false);
+  M5StackChan.setServoPowerEnabled(false);
+
+  gemini.disconnect(true, "sleep");
+
+  unitPaHub.stopHaptic();
+
+  M5.Speaker.stop();
+  M5.Speaker.end();
+  M5.Mic.end();
+
+  blackoutExternalLightsForPowerOff();
+
+  M5.Power.setExtOutput(false);
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+
+  delay(50);
+
+  Serial.println("[DIAG:DEEP_SLEEP] sleeping now");
+  M5.Power.deepSleep(M5.Power.sleep_no_timer, true);
 }
 
 void loop() {
@@ -964,6 +1006,7 @@ void loop() {
       g_pending_boot_pet = false;
       Serial.println("[BOOT:PET] Executing deferred boot pet in first loop()");
       g_last_human_activity_ms = millis();
+      g_last_deep_sleep_activity_ms = g_last_human_activity_ms;
       unitPaHub.purr();
       emotion.setEmotion("meigo");
       g_emotion_override_until_ms = millis() + 3000;
@@ -1318,6 +1361,7 @@ void loop() {
             lastLiftMs = now;
             g_is_currently_lifted = true;
             g_last_human_activity_ms = now;
+            g_last_deep_sleep_activity_ms = now;
             emotion.setLifted(true);
             emotion.setEmotion("scared"); // Expressao de susto com altura
             g_emotion_override_until_ms = now + 4000;
@@ -1433,6 +1477,7 @@ void loop() {
           if (now - s_last_scared_ms > 7000) {
             s_last_scared_ms = now;
             g_last_human_activity_ms = now;
+            g_last_deep_sleep_activity_ms = now;
 
             Serial.printf("[DIAG:TOF_NEAR] raw_mm=%u filtered_mm=%.1f near_count=%u first_near_ms=%lu elapsed_ms=%lu trigger=accepted\n",
                           raw_mm, s_tof_filtered_mm, s_tof_near_count, s_tof_first_near_ms, elapsed_ms);
@@ -1490,6 +1535,7 @@ void loop() {
       // Prioridade 4: Conversa Ativa / Microfone já gravando (isRecording)
       else if (gemini.isRecording()) {
         Serial.println("Action: Conversa já ativa -> renovação de escuta (feedback visual discreto)");
+        g_last_deep_sleep_activity_ms = now;
         g_last_human_activity_ms = now;
         emotion.setEmotion("happy");
         g_emotion_override_until_ms = now + 2000;
@@ -1499,6 +1545,7 @@ void loop() {
       // Prioridade 5: Gesto válido para abrir conversa!
       else {
         Serial.println("Action: Gesto aceito -> Acordando e preparando microfone!");
+        g_last_deep_sleep_activity_ms = now;
         g_last_human_activity_ms = now;
         playWakeDroidChirp();
         emotion.setEmotion("happy");
@@ -1511,6 +1558,7 @@ void loop() {
     }
     else if (tofEvt == TofEvent::USER_PRESENT) {
       Serial.printf("TofEvent: USER_PRESENT (usuário chegou à mesa a %u mm)\n", dist);
+      g_last_deep_sleep_activity_ms = now;
       g_last_human_activity_ms = now;
       // Presença estável NUNCA abre o microfone!
       // Apenas atualiza atividade e faz acolhimento visual se estava dormindo
@@ -1644,6 +1692,7 @@ void loop() {
 
   // Affection / Petting on middle electrode: NEVER toggles or cuts off dialogue!
   if (midTouch > 0 || swiped) {
+    g_last_deep_sleep_activity_ms = now;
     g_last_human_activity_ms = now;
     if (s_mid_touch_start_ms == 0) s_mid_touch_start_ms = now;
 
@@ -1709,6 +1758,7 @@ void loop() {
 
   // Body touch on front/back: physical interaction, wakes robot if asleep, NEVER turns off dialogue!
   if ((frontTouch > 0 || backTouch > 0) && midTouch == 0 && !swiped) {
+    g_last_deep_sleep_activity_ms = now;
     g_last_human_activity_ms = now;
     static uint32_t s_last_body_touch_ms = 0;
     if (now - s_last_body_touch_ms > 800) {
@@ -1737,6 +1787,7 @@ void loop() {
   if (g_voice_toggle_requested) {
     g_voice_toggle_requested = false;
     Serial.println("HTTP voice toggle requested");
+    g_last_deep_sleep_activity_ms = now;
     dialogueToggle = true;
   }
 
@@ -1850,6 +1901,7 @@ void loop() {
 
   if (dialogueToggle) {
     g_last_human_activity_ms = millis();
+    g_last_deep_sleep_activity_ms = g_last_human_activity_ms;
     unitPaHub.click(); // Tactile click feedback on touch
     memory.appendEvent("user", "touch pressed", "touch");
 
@@ -1900,6 +1952,7 @@ void loop() {
   now = millis();
   // Keep human activity timestamp refreshed during active conversation, recording, or speaking
   if (gemini.isRecording() || gemini.isSpeaking() || gemini.continuousConversation()) {
+    g_last_deep_sleep_activity_ms = now;
     g_last_human_activity_ms = now;
   }
 
@@ -1938,6 +1991,18 @@ void loop() {
                   now, g_last_human_activity_ms, now - g_last_human_activity_ms, kIdleSleepMs, millis());
     emotion.setEmotion("sleep");
     servoGestures.queueGesture("center_head");
+  }
+
+  if (!gemini.isRecording() && !gemini.isSpeaking() && !gemini.continuousConversation() &&
+      g_emotion_override_until_ms == 0 &&
+      g_last_deep_sleep_activity_ms &&
+      now - g_last_deep_sleep_activity_ms > kDeepSleepMs &&
+      !g_deep_sleep_in_progress) {
+    Serial.printf("[DIAG:DEEP_SLEEP] trigger=idle_timeout now=%lu last_human_activity=%lu (diff=%lu) last_deep_sleep_activity=%lu (diff=%lu) kDeepSleepMs=%lu millis=%lu\n",
+                  now, g_last_human_activity_ms, now - g_last_human_activity_ms,
+                  g_last_deep_sleep_activity_ms, now - g_last_deep_sleep_activity_ms,
+                  kDeepSleepMs, millis());
+    enterDeepSleep();
   }
 
   // Durante a fala, roda livre sem delay(2) para maxima frequencia de atendimento ao speaker DMA
