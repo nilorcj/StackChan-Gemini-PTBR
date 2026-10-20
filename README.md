@@ -105,7 +105,15 @@ A chave compartilhada fica armazenada no cartão microSD da Pix em:
 * O Gemini Live pode acionar a ferramenta `web_search` quando precisa consultar informações externas atualizadas ou quando solicitado pelo usuário.
 * O firmware envia a consulta para o ToolGateway via `POST /v2/call`.
 * O Cloudflare Worker executa a pesquisa utilizando a API **TinyFish** e devolve resultados estruturados contendo **título, URL, data, site e snippet** (atualmente até **5 resultados** por consulta).
-* Esse fluxo via ToolGateway substitui a dependência do Google Search Grounding como caminho produtivo principal de `web_search` na Pix (embora código/logs relacionados a Google Grounding ainda existam no projeto, ele não é o caminho produtivo atual de `web_search`).
+* Esse fluxo via ToolGateway substitui a dependência do Google Search Grounding como caminho produtivo principal de `web_search` na Pix (o Grounding nativo foi removido do setup da Live API, operando a busca exclusivamente via gateway).
+
+### Compatibilidade com Gemini Free Tier
+
+* **Remoção do Grounding nativo:** O Google Search Grounding nativo foi removido do setup da Gemini Live. Anteriormente, ele era enviado em toda sessão no array `setup.tools` como `{"googleSearch": {}}`.
+* **Causa e resolução da conexão Free Tier:** Na configuração testada, a presença do Google Search Grounding impedia a conexão com a chave Free Tier; sua remoção resolveu o problema. Mantendo a mesma chave Free Tier instalada no microSD e removendo apenas o Grounding nativo, a Pix passou a conectar normalmente (`connected=true`, `ready=true`).
+* **Validação de voz e áudio:** A conversa por voz e a fluidez do áudio foram validadas na prática após a mudança.
+* **Busca web preservada via ToolGateway:** Isso **não** remove a busca web da Pix: a ferramenta `web_search` continua operando pelo caminho `Pix → ToolGateway → /v2/call → Cloudflare Worker → TinyFish`, tornando o Google Search Grounding nativo dispensável na arquitetura atual.
+* **Independência de busca:** Essa separação permite utilizar a Gemini Live sem depender do Grounding nativo do Google para pesquisas externas.
 
 ### Google Calendar via ToolGateway
 
@@ -147,11 +155,12 @@ Na implantação utilizada e validada neste projeto, o Worker requer os seguinte
 
 ### Baseline Validado
 
-* **Baseline funcional do firmware validado:** `383d6e10435b7127f8724487f62943f806dea650`
+* **Baseline funcional do firmware validado:** `f1f10c75a8252bf2e2aec85fd2117bda79141523`
 * **Commits principais desta evolução:**
-  * `80d55d5` — `feat(tools): use local weather and currency caches`
-  * `fa6e21b` — `feat(gateway): add HMAC-SHA256 signing and migrate callTool to /v2/call`
+  * `f1f10c7` — `fix(gemini): remove native Google Search grounding from Live setup`
   * `383d6e1` — `feat(tools): route web search and agenda through ToolGateway`
+  * `fa6e21b` — `feat(gateway): add HMAC-SHA256 signing and migrate callTool to /v2/call`
+  * `80d55d5` — `feat(tools): use local weather and currency caches`
 
 ---
 
