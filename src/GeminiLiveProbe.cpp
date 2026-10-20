@@ -847,10 +847,6 @@ void GeminiLiveProbe::sendSetup() {
       }
     }
   }
-  // Native server-side Grounding with Google Search
-  auto googleSearchTool = tools.add<JsonObject>();
-  googleSearchTool["googleSearch"].to<JsonObject>();
-  Serial.println("GeminiLive: native Google Search enabled");
 
   auto sys = setup["systemInstruction"].to<JsonObject>();
   sys["role"] = "user";
