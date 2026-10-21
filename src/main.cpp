@@ -43,7 +43,7 @@ GoogleCalendarClient googleCalendar(configManager);
 volatile bool g_voice_toggle_requested = false;
 static uint8_t g_speaker_volume = 200;
 static constexpr uint32_t kIdleSleepMs = 120000; // 2 minutes desk idle before sleep (prevents premature sleeping)
-static constexpr uint32_t kDeepSleepMs = 300000; // 5 minutes total idle before deep sleep (TEST ONLY - NOT FINAL)
+static constexpr uint32_t kDeepSleepMs = 900000; // 15 minutes total idle before deep sleep
 static bool g_deep_sleep_in_progress = false;
 static constexpr uint32_t kPowerButtonLedOffHoldMs = 700;
 static uint32_t g_last_human_activity_ms = 0;
