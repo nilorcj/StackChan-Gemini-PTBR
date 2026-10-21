@@ -155,12 +155,56 @@ Na implantação utilizada e validada neste projeto, o Worker requer os seguinte
 
 ### Baseline Validado
 
-* **Baseline funcional do firmware validado:** `f1f10c75a8252bf2e2aec85fd2117bda79141523`
+* **Baseline funcional do firmware validado:** `4aad2073c69d3bcc37416dc8b689b8ce4cfcc80b`
 * **Commits principais desta evolução:**
+  * `4aad207` — `fix(power): set deep sleep timeout to 15 minutes`
+  * `4ec1920` — `feat(power): add automatic deep sleep with touch wake`
   * `f1f10c7` — `fix(gemini): remove native Google Search grounding from Live setup`
   * `383d6e1` — `feat(tools): route web search and agenda through ToolGateway`
   * `fa6e21b` — `feat(gateway): add HMAC-SHA256 signing and migrate callTool to /v2/call`
   * `80d55d5` — `feat(tools): use local weather and currency caches`
+
+---
+
+## ⚡ Gerenciamento de Energia e Sleep
+
+### Deep Sleep automático
+
+Comportamento final validado no CoreS3:
+
+- após ~2 minutos sem interação:
+  a Pix entra no sleep visual/comportamental atual;
+
+- após 15 minutos sem interação real:
+  a Pix entra automaticamente em deep sleep;
+
+- presença contínua do ToF NÃO impede o deep sleep;
+  o timer profundo usa atividade real separada;
+
+- antes do deep sleep:
+  - servos são parados;
+  - torque e alimentação dos servos são desligados;
+  - Gemini é desconectado intencionalmente;
+  - haptic é parado;
+  - mic/speaker são encerrados;
+  - LEDs são apagados;
+  - alimentação externa de 5 V é cortada;
+  - Wi-Fi é desligado;
+
+- deep sleep usa:
+  `M5.Power.deepSleep(M5.Power.sleep_no_timer, true)`
+
+- wake:
+  toque na tela;
+  CoreS3 GPIO21 / EXT1 / AW9523 INTN;
+
+- após o toque:
+  ocorre boot normal;
+  Wi-Fi reconecta;
+  HTTP retorna;
+  Gemini Live reconecta e fica ready.
+
+*Fluxo validado em hardware.*
 
 ---
 
