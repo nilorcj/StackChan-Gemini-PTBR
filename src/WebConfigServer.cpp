@@ -33,6 +33,7 @@ constexpr const char* kGatewayConfigPath = "/app/StackChan/config/gateway.json";
 constexpr const char* kSummaryConfigPath = "/app/StackChan/config/summary.json";
 constexpr const char* kSystemPromptPath = "/app/StackChan/prompts/system.txt";
 constexpr const char* kPersonaPromptPath = "/app/StackChan/prompts/persona.txt";
+constexpr const char* kGatewayHmacKeyPath = "/app/StackChan/secrets/gateway_hmac_key.txt";
 constexpr const char* kSecretsMetaPath = "/app/StackChan/secrets/meta.jsonl";
 constexpr const char* kWebPasswordHashPath = "/app/StackChan/secrets/web_password_sha256.txt";
 constexpr const char* kWebAuthUser = "stackchan";
@@ -234,65 +235,527 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Central da Pix</title>
   <style>
-    :root{--bg:#0b0f19;--card:#151e2e;--card-border:#232f46;--text:#f8fafc;--muted:#94a3b8;--primary:#38bdf8;--green:#22c55e;--amber:#f59e0b;--red:#ef4444;--purple:#a855f7;--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-    *{box-sizing:border-box}
-    body{font-family:var(--font);background:var(--bg);color:var(--text);margin:0;padding:16px;max-width:960px;margin:auto;line-height:1.5}
-    header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;padding-bottom:12px;border-bottom:1px solid var(--card-border);margin-bottom:16px}
-    h1{font-size:24px;margin:0;display:flex;align-items:center;gap:8px}
-    .sub{color:var(--muted);font-size:13px}
-    .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-    .tab{background:#1e293b;color:var(--muted);border:1px solid var(--card-border);border-radius:8px;padding:9px 16px;font-weight:600;cursor:pointer;font-size:14px;transition:all .15s}
-    .tab.active{background:var(--primary);color:#082f49;border-color:var(--primary)}
-    .view{display:none}.view.active{display:block}
-    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
-    .card{background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:14px;box-shadow:0 2px 10px rgba(0,0,0,0.3)}
-    .card h3{margin:0 0 10px;font-size:15px;color:var(--primary);display:flex;align-items:center;justify-content:space-between}
-    .card-full{grid-column:1/-1}
-    .kv{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.05);font-size:13px}
-    .kv:last-child{border-bottom:none}
-    .k{color:var(--muted)}
-    .v{font-weight:600;font-family:ui-monospace,Menlo,monospace}
-    .badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:700}
-    .badge-green{background:rgba(34,197,94,0.2);color:#4ade80;border:1px solid rgba(34,197,94,0.4)}
-    .badge-amber{background:rgba(245,158,11,0.2);color:#fbbf24;border:1px solid rgba(245,158,11,0.4)}
-    .badge-red{background:rgba(239,68,68,0.2);color:#f87171;border:1px solid rgba(239,68,68,0.4)}
-    .badge-blue{background:rgba(56,189,248,0.2);color:#38bdf8;border:1px solid rgba(56,189,248,0.4)}
-    .badge-purple{background:rgba(168,85,247,0.2);color:#c084fc;border:1px solid rgba(168,85,247,0.4)}
-    .badge-gray{background:rgba(148,163,184,0.2);color:#cbd5e1;border:1px solid rgba(148,163,184,0.4)}
-    label{display:block;margin:10px 0 4px;font-size:13px;color:#cbd5e1}
-    input,select,textarea{width:100%;border-radius:8px;border:1px solid #334155;background:#0b0f19;color:var(--text);padding:8px 10px;font:inherit;font-size:13px}
-    input[type=checkbox]{width:auto;margin-right:8px;vertical-align:middle}
-    input[type=range]{padding:0}
-    textarea{min-height:90px;font-family:ui-monospace,monospace;font-size:12px}
-    button{border:0;border-radius:8px;padding:8px 14px;font-weight:700;font-size:13px;cursor:pointer;transition:opacity .15s}
-    button:hover{opacity:.85}
-    .btn-primary{background:var(--primary);color:#082f49}
-    .btn-green{background:var(--green);color:#052e16}
-    .btn-danger{background:var(--red);color:#450a0a}
-    .btn-sec{background:#334155;color:#f1f5f9}
-    .btn-bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-    @media(max-width:640px){.row{grid-template-columns:1fr}}
-    .feedback{margin-top:10px;padding:8px 12px;border-radius:8px;font-size:13px;display:none}
-    .feedback.ok{display:block;background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.3)}
-    .feedback.err{display:block;background:rgba(239,68,68,0.15);color:#f87171;border:1px solid rgba(239,68,68,0.3)}
-    .fact-card{background:#0b0f19;border:1px solid var(--card-border);border-radius:8px;padding:10px 12px;margin-bottom:8px}
-    .fact-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
-    .fact-key{font-family:ui-monospace,monospace;font-size:12px;font-weight:700;color:var(--primary)}
-    .fact-text{font-size:13px;color:#f1f5f9;line-height:1.4}
-    .fact-ts{margin-left:auto;font-size:11px;color:var(--muted)}
-    footer{margin-top:24px;text-align:center;color:var(--muted);font-size:13px;border-top:1px solid var(--card-border);padding-top:12px}
-    footer a{color:var(--primary);text-decoration:none}
+    :root {
+      --bg: #F4F6FA;
+      --card: #FFFFFF;
+      --card-border: #E5E7EB;
+      --text: #172033;
+      --muted: #667085;
+      --primary: #4F46E5;
+      --primary-hover: #4338CA;
+      --primary-light: #EEF2FF;
+      --green: #10B981;
+      --green-bg: #ECFDF5;
+      --green-border: #A7F3D0;
+      --green-text: #065F46;
+      --amber: #F59E0B;
+      --amber-bg: #FFFBEB;
+      --amber-border: #FDE68A;
+      --amber-text: #92400E;
+      --red: #EF4444;
+      --red-bg: #FEF2F2;
+      --red-border: #FECACA;
+      --red-text: #991B1B;
+      --blue-bg: #EFF6FF;
+      --blue-border: #BFDBFE;
+      --blue-text: #1E40AF;
+      --gray-bg: #F3F4F6;
+      --gray-border: #E5E7EB;
+      --gray-text: #374151;
+      --radius: 16px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 2px rgba(0,0,0,0.03);
+      --shadow-hover: 0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.04);
+      --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px 16px;
+      max-width: 980px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding-bottom: 20px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .brand-title {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--text);
+    }
+    .brand-subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+      margin-top: 2px;
+    }
+    .tabs {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 24px;
+      padding: 4px;
+      background: #E5E7EB;
+      border-radius: 12px;
+      width: fit-content;
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    .tab {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 18px;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all .15s ease-in-out;
+      white-space: nowrap;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      background: #FFFFFF;
+      color: var(--primary);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+    .view { display: none; }
+    .view.active { display: block; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 20px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 22px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    .card-full { grid-column: 1 / -1; }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #F3F4F6;
+    }
+    .card-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card-title svg {
+      width: 18px;
+      height: 18px;
+      color: var(--primary);
+      flex-shrink: 0;
+    }
+    .card-subtitle {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: -8px;
+      margin-bottom: 14px;
+      line-height: 1.4;
+    }
+    .kv {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid #F9FAFB;
+      font-size: 13px;
+    }
+    .kv:last-child { border-bottom: none; }
+    .k { color: var(--muted); font-weight: 500; }
+    .v { font-weight: 600; font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--text); }
+    
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-green { background: var(--green-bg); color: var(--green-text); border: 1px solid var(--green-border); }
+    .badge-amber { background: var(--amber-bg); color: var(--amber-text); border: 1px solid var(--amber-border); }
+    .badge-red { background: var(--red-bg); color: var(--red-text); border: 1px solid var(--red-border); }
+    .badge-blue { background: var(--blue-bg); color: var(--blue-text); border: 1px solid var(--blue-border); }
+    .badge-gray { background: var(--gray-bg); color: var(--gray-text); border: 1px solid var(--gray-border); }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      display: inline-block;
+    }
+
+    /* Switch Moderno CSS */
+    .switch-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: #F8FAFC;
+      border: 1px solid #E2E8F0;
+      border-radius: 10px;
+      margin: 10px 0 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .switch-control {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+    .switch-control input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      position: absolute;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #CBD5E1;
+      transition: .2s;
+      border-radius: 24px;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 18px;
+      width: 18px;
+      left: 3px;
+      bottom: 3px;
+      background-color: white;
+      transition: .2s;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .switch-control input:checked + .slider {
+      background-color: var(--primary);
+    }
+    .switch-control input:checked + .slider:before {
+      transform: translateX(20px);
+    }
+
+    label.field-label {
+      display: block;
+      margin: 12px 0 5px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #374151;
+    }
+    input[type=text], input[type=password], select, textarea {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid #D1D5DB;
+      background: #FFFFFF;
+      color: var(--text);
+      padding: 9px 12px;
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input[type=text]:focus, input[type=password]:focus, select:focus, textarea:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+    }
+    input[type=range] {
+      width: 100%;
+      margin: 8px 0;
+      accent-color: var(--primary);
+    }
+    textarea {
+      min-height: 85px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12px;
+      resize: vertical;
+    }
+    
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 9px 16px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all .15s ease-in-out;
+    }
+    button:hover { opacity: .9; transform: translateY(-1px); }
+    button:active { transform: translateY(0); }
+    .btn-primary {
+      background: var(--primary);
+      color: #FFFFFF;
+      box-shadow: 0 2px 4px rgba(79, 70, 229, 0.25);
+    }
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+    .btn-outline-danger {
+      background: #FFFFFF;
+      color: var(--red);
+      border: 1px solid var(--red-border);
+    }
+    .btn-outline-danger:hover {
+      background: var(--red-bg);
+      border-color: var(--red);
+    }
+    .btn-sec {
+      background: #FFFFFF;
+      color: #374151;
+      border: 1px solid #D1D5DB;
+    }
+    .btn-sec:hover {
+      background: #F9FAFB;
+      border-color: #9CA3AF;
+    }
+    .btn-bar {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    
+    .input-btn-group {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .input-btn-group input { flex: 1; }
+    
+    .password-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+    .password-wrap input { padding-right: 36px; }
+    .btn-eye {
+      position: absolute;
+      right: 6px;
+      background: transparent;
+      border: 0;
+      padding: 6px;
+      cursor: pointer;
+      color: var(--muted);
+      border-radius: 6px;
+    }
+    .btn-eye:hover { color: var(--text); background: #F3F4F6; }
+
+    .hint {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 5px;
+      line-height: 1.4;
+    }
+    .callout-amber {
+      background: var(--amber-bg);
+      border: 1px solid var(--amber-border);
+      color: var(--amber-text);
+      border-radius: 10px;
+      padding: 10px 14px;
+      font-size: 12px;
+      line-height: 1.45;
+      margin-top: 10px;
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+
+    /* Fluxo Gráfico de Energia */
+    .energy-steps {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      align-items: center;
+      gap: 8px;
+      margin: 12px 0 16px;
+      text-align: center;
+    }
+    .energy-step {
+      background: #F8FAFC;
+      border: 1px solid #E2E8F0;
+      border-radius: 12px;
+      padding: 12px 8px;
+    }
+    .energy-step-time {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--primary);
+    }
+    .energy-step-desc {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      margin-top: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .energy-arrow {
+      color: #94A3B8;
+      font-weight: 700;
+      font-size: 16px;
+    }
+    @media(max-width: 640px) {
+      .energy-steps {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+      .energy-arrow {
+        transform: rotate(90deg);
+        margin: -4px 0;
+      }
+    }
+
+    details.audio-advanced {
+      border: 1px solid #E2E8F0;
+      border-radius: 10px;
+      padding: 10px 14px;
+      background: #F8FAFC;
+      margin-top: 12px;
+    }
+    details.audio-advanced summary {
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--primary);
+      cursor: pointer;
+      user-select: none;
+      outline: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    details.audio-advanced[open] summary {
+      margin-bottom: 12px;
+      border-bottom: 1px solid #E2E8F0;
+      padding-bottom: 8px;
+    }
+
+    .feedback {
+      margin-bottom: 16px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 500;
+      display: none;
+    }
+    .feedback.ok {
+      display: block;
+      background: var(--green-bg);
+      color: var(--green-text);
+      border: 1px solid var(--green-border);
+    }
+    .feedback.err {
+      display: block;
+      background: var(--red-bg);
+      color: var(--red-text);
+      border: 1px solid var(--red-border);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media(max-width: 640px) {
+      .row { grid-template-columns: 1fr; }
+      body { padding: 16px 12px; }
+      .grid { grid-template-columns: 1fr; }
+      .btn-bar button { width: 100%; }
+    }
+
+    .fact-card {
+      background: #FFFFFF;
+      border: 1px solid #E5E7EB;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .fact-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+    }
+    .fact-key {
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--primary);
+    }
+    .fact-text {
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .fact-ts {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    footer {
+      margin-top: 36px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 13px;
+      border-top: 1px solid var(--card-border);
+      padding-top: 18px;
+    }
+    footer a {
+      color: var(--primary);
+      text-decoration: none;
+      font-weight: 600;
+    }
+    footer a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
-  <header>
+    <header>
     <div>
-      <h1>Central da Pix <span id="hdrStatusBadge" class="badge badge-green">Online</span></h1>
-      <div class="sub">Painel integrado de status, configuração e memória</div>
+      <h1 class="brand-title">PIX <span class="badge badge-green" id="hdrStatusBadge"><span class="status-dot"></span> Online</span></h1>
+      <div class="brand-subtitle">StackChan CoreS3 • Painel de Controle</div>
     </div>
     <div style="text-align:right">
-      <span id="deviceDateTime" class="sub">--:--</span>
+      <span id="deviceDateTime" class="brand-subtitle" style="font-weight:600">--:--</span>
     </div>
   </header>
 
@@ -370,33 +833,45 @@ const char kIndexHtml[] PROGMEM = R"HTML(
   <main id="view-config" class="view">
     <div id="cfgFeedback" class="feedback"></div>
     <div class="grid">
-      <!-- Conectividade & Sistema -->
+      <!-- 1. Wi-Fi -->
       <section class="card">
-        <h3>Rede & Sistema</h3>
-        <label>Wi-Fi SSID</label>
-        <input id="wifiSsid" placeholder="SSID armazenado; vazio para manter">
-        <label>Fuso Horário (Timezone)</label>
-        <select id="timezoneOffset">
-          <option value="-5">UTC-5 (Acre)</option>
-          <option value="-4">UTC-4 (Manaus / Cuiabá)</option>
-          <option value="-3">UTC-3 (Brasília / São Paulo)</option>
-          <option value="-2">UTC-2 (Noronha)</option>
-          <option value="-1">UTC-1 (Cabo Verde)</option>
-          <option value="0">UTC 0 (Londres / GMT)</option>
-          <option value="1">UTC+1 (Europa Central)</option>
-        </select>
-        <label>Robot ID</label>
-        <input id="robotId" value="stackchan">
-        <label>Gateway Base URL</label>
-        <input id="gatewayUrl" placeholder="http://gateway.local:8811/stackchan">
+        <div class="card-header">
+          <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg> 1. Wi-Fi</h3>
+          <span id="badgeWifiStatus" class="badge badge-gray"><span class="status-dot"></span> Verificando</span>
+        </div>
+        <label class="switch-label">
+          <span>Wi-Fi Habilitado</span>
+          <span class="switch-control">
+            <input id="wifiEnabled" type="checkbox">
+            <span class="slider"></span>
+          </span>
+        </label>
+        <label class="field-label">Wi-Fi SSID</label>
+        <input id="wifiSsid" type="text" placeholder="digite o SSID da rede">
+        <label class="field-label">Senha Wi-Fi</label>
+        <div class="password-wrap">
+          <input id="wifiPassword" type="password" placeholder="•••••••••••••• (deixe vazio para manter a atual)">
+          <button type="button" class="btn-eye" onclick="togglePass('wifiPassword')" title="Mostrar/Ocultar"><svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
       </section>
 
-      <!-- Gemini Live -->
+      <!-- 2. Gemini Live -->
       <section class="card">
-        <h3>Gemini Live & Serviços</h3>
-        <label>Modelo Gemini</label>
-        <input id="geminiModel" placeholder="models/gemini-3.1-flash-live-preview">
-        <label>Voz Gemini</label>
+        <div class="card-header">
+          <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg> 2. Gemini Live</h3>
+          <span id="badgeGeminiStatus" class="badge badge-gray"><span class="status-dot"></span> Verificando</span>
+        </div>
+        <label class="switch-label">
+          <span>Gemini Habilitado</span>
+          <span class="switch-control">
+            <input id="geminiEnabled" type="checkbox">
+            <span class="slider"></span>
+          </span>
+        </label>
+        <label class="field-label">Modelo Gemini</label>
+        <input id="geminiModel" type="text" placeholder="models/gemini-3.1-flash-live-preview">
+        <div class="hint">O modelo pode ser alterado sem recompilar o firmware, desde que compatível com a Gemini Live API.</div>
+        <label class="field-label">Voz Gemini</label>
         <select id="geminiVoice">
           <option value="Puck">Puck — alegre</option>
           <option value="Charon">Charon — informativo</option>
@@ -410,88 +885,161 @@ const char kIndexHtml[] PROGMEM = R"HTML(
           <option value="Despina">Despina</option>
           <option value="Achernar">Achernar</option>
         </select>
-        <div style="margin-top:14px">
-          <label><input id="wifiEnabled" type="checkbox"> Wi-Fi Habilitado</label>
-          <label><input id="webEnabled" type="checkbox"> Web UI Habilitada</label>
-          <label><input id="geminiEnabled" type="checkbox"> Gemini Habilitado</label>
-          <label><input id="gatewayEnabled" type="checkbox"> Gateway Habilitado</label>
+        <label class="field-label">Gemini API Key</label>
+        <div class="password-wrap">
+          <input id="geminiKey" type="password" placeholder="•••••••••••••• (deixe vazio para manter a atual)">
+          <button type="button" class="btn-eye" onclick="togglePass('geminiKey')" title="Mostrar/Ocultar"><svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
         </div>
       </section>
 
-      <!-- Áudio & VAD -->
+      <!-- 3. ToolGateway / Serviços externos -->
       <section class="card card-full">
-        <h3>Áudio & Detecção de Fala (VAD)</h3>
+        <div class="card-header">
+          <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg> 3. ToolGateway</h3>
+          <span id="badgeGatewayStatus" class="badge badge-gray"><span class="status-dot"></span> HMAC Ativa</span>
+        </div>
+        <div class="card-subtitle">Serviços externos da Pix • Cada instalação utiliza seu próprio Worker para TinyFish e Agenda</div>
+        <label class="switch-label">
+          <span>ToolGateway Habilitado</span>
+          <span class="switch-control">
+            <input id="gatewayEnabled" type="checkbox">
+            <span class="slider"></span>
+          </span>
+        </label>
         <div class="row">
           <div>
-            <label>Volume do Alto-falante: <span id="spkVolLabel">200</span> / 255</label>
-            <input id="speakerVolume" type="range" min="0" max="255" step="1" oninput="spkVolLabel.textContent=this.value">
-            <label>Ganho do Microfone: <span id="micMagLabel">16</span> / 24</label>
-            <input id="micMagnification" type="range" min="1" max="24" step="1" oninput="micMagLabel.textContent=this.value">
-            <label>Filtro de Ruído Mic: <span id="micNoiseLabel">0</span> / 4</label>
-            <input id="micNoiseFilter" type="range" min="0" max="4" step="1" oninput="micNoiseLabel.textContent=this.value">
+            <label class="field-label">URL do Gateway / Worker</label>
+            <input id="gatewayUrl" type="text" placeholder="https://seu-worker.workers.dev">
+            <div class="hint">Endpoint base do seu Cloudflare Worker (consulte o README).</div>
           </div>
           <div>
-            <label>Buffer Pré-fala (VAD Prefix): <span id="vadPreLabel">800</span> ms</label>
-            <input id="vadPrefixPadding" type="range" min="0" max="2000" step="100" oninput="vadPreLabel.textContent=this.value">
-            <label>Duração do Silêncio (VAD Silence): <span id="vadSilLabel">900</span> ms</label>
-            <input id="vadSilenceDuration" type="range" min="100" max="3000" step="100" oninput="vadSilLabel.textContent=this.value">
-            <div style="margin-top:14px">
-              <label><input id="vadStartSensitivityHigh" type="checkbox"> Sensibilidade inicial alta</label>
-              <label><input id="vadEndSensitivityLow" type="checkbox"> Sensibilidade final baixa</label>
-              <label><input id="vadTurnIncludesAllInput" type="checkbox"> Turno inclui áudio completo</label>
+            <label class="field-label">Chave HMAC do Gateway</label>
+            <div class="password-wrap">
+              <input id="gatewayHmacKey" type="password" placeholder="64 caracteres hexadecimais; deixe vazio para manter a atual">
+              <button type="button" class="btn-eye" onclick="togglePass('gatewayHmacKey')" title="Mostrar/Ocultar"><svg style="width:16px;height:16px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button>
+            </div>
+            <div class="btn-bar" style="margin-top:8px">
+              <button type="button" onclick="generateHmacKey()" class="btn-sec">Gerar nova chave</button>
+              <button type="button" id="btnCopyHmac" onclick="copyHmacKey()" class="btn-sec" style="display:none">Copiar</button>
+            </div>
+            <div id="hmacAlert" class="callout-amber" style="display:none">
+              <span>⚠️</span>
+              <span>Copie esta chave para o secret <strong>HMAC_SHARED_KEY</strong> do seu Worker antes de salvar.</span>
             </div>
           </div>
         </div>
-        <div class="btn-bar">
-          <button onclick="saveRuntime(false)" class="btn-primary">Salvar Configurações</button>
-          <button onclick="saveRuntime(true)" class="btn-danger">Salvar e Reiniciar</button>
-          <button onclick="loadRuntime()" class="btn-sec">Recarregar</button>
-        </div>
       </section>
 
-      <!-- Segredos (Protegidos) -->
-      <section class="card card-full">
-        <h3>Segredos & Chaves Privadas (Protegidos)</h3>
-        <p class="sub">Chaves salvas nunca são expostas. Deixe o campo em branco para manter a chave atual.</p>
-        <div class="row">
-          <div>
-            <label>Gemini API Key</label>
-            <input id="geminiKey" type="password" placeholder="•••••••••••••• (chave atual preservada)">
-            <label>Senha Wi-Fi</label>
-            <input id="wifiPassword" type="password" placeholder="•••••••••••••• (senha atual preservada)">
-          </div>
-          <div>
-            <label>Google Calendar URL (.ics)</label>
-            <input id="calendarUrl" type="password" placeholder="•••••••••••••• (URL atual preservada)">
-            <label>Gateway Token</label>
-            <input id="gatewayToken" type="password" placeholder="•••••••••••••• (token atual preservado)">
-          </div>
-        </div>
-        <div class="btn-bar">
-          <button onclick="saveSecrets()" class="btn-danger">Salvar Segredos</button>
-        </div>
-      </section>
-
-      <!-- Segurança Web & Prompts -->
+      <!-- 4. Energia e repouso -->
       <section class="card">
-        <h3>Segurança Web</h3>
-        <p class="sub">Acesso protegido por autenticação HTTP Basic (usuário <code>stackchan</code>).</p>
-        <label>Nova Senha Web</label>
-        <input id="webPassword" type="password" placeholder="mínimo 8 caracteres">
-        <div class="btn-bar">
-          <button onclick="saveWebPassword()" class="btn-sec">Definir Senha Web</button>
+        <div class="card-header">
+          <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> 4. Energia e repouso</h3>
+          <span class="badge badge-green"><span class="status-dot"></span> Ativo</span>
+        </div>
+        <div class="card-subtitle">Gerenciamento automático de energia validado no CoreS3</div>
+        <div class="energy-steps">
+          <div class="energy-step">
+            <div class="energy-step-time">~2 min</div>
+            <div class="energy-step-desc">Sleep visual</div>
+          </div>
+          <div class="energy-arrow">→</div>
+          <div class="energy-step">
+            <div class="energy-step-time">15 min</div>
+            <div class="energy-step-desc">Deep sleep</div>
+          </div>
+          <div class="energy-arrow">→</div>
+          <div class="energy-step">
+            <div class="energy-step-time">Toque</div>
+            <div class="energy-step-desc">Acordar</div>
+          </div>
+        </div>
+        <div class="hint">Após 15 minutos sem interação real, a Pix entra automaticamente em repouso profundo. A presença contínua detectada pelo sensor ToF não impede o deep sleep.</div>
+      </section>
+
+      <!-- 5. Áudio avançado -->
+      <section class="card">
+        <div class="card-header">
+          <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg> 5. Áudio & Fala</h3>
+        </div>
+        <label class="field-label">Volume do Alto-falante: <span id="spkVolLabel" style="color:var(--primary)">200</span> / 255</label>
+        <input id="speakerVolume" type="range" min="0" max="255" step="1" oninput="spkVolLabel.textContent=this.value">
+        <details class="audio-advanced">
+          <summary>
+            <span>Parâmetros Técnicos & VAD</span>
+            <span style="font-size:11px;color:var(--muted)">Clique para expandir</span>
+          </summary>
+          <div style="margin-top:10px">
+            <label class="field-label">Ganho do Microfone: <span id="micMagLabel">16</span> / 24</label>
+            <input id="micMagnification" type="range" min="1" max="24" step="1" oninput="micMagLabel.textContent=this.value">
+            <label class="field-label">Filtro de Ruído Mic: <span id="micNoiseLabel">0</span> / 4</label>
+            <input id="micNoiseFilter" type="range" min="0" max="4" step="1" oninput="micNoiseLabel.textContent=this.value">
+            <label class="field-label">Buffer Pré-fala (VAD Prefix): <span id="vadPreLabel">800</span> ms</label>
+            <input id="vadPrefixPadding" type="range" min="0" max="2000" step="100" oninput="vadPreLabel.textContent=this.value">
+            <label class="field-label">Duração do Silêncio (VAD Silence): <span id="vadSilLabel">900</span> ms</label>
+            <input id="vadSilenceDuration" type="range" min="100" max="3000" step="100" oninput="vadSilLabel.textContent=this.value">
+            <div style="margin-top:14px">
+              <label style="display:block;margin-bottom:6px"><input id="vadStartSensitivityHigh" type="checkbox"> Sensibilidade inicial alta</label>
+              <label style="display:block;margin-bottom:6px"><input id="vadEndSensitivityLow" type="checkbox"> Sensibilidade final baixa</label>
+              <label style="display:block"><input id="vadTurnIncludesAllInput" type="checkbox"> Turno inclui áudio completo</label>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <!-- 6. Segurança Web & Sistema -->
+      <section class="card">
+        <div class="card-header">
+          <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> 6. Segurança Web & Sistema</h3>
+        </div>
+        <label class="switch-label">
+          <span>Web UI Habilitada</span>
+          <span class="switch-control">
+            <input id="webEnabled" type="checkbox">
+            <span class="slider"></span>
+          </span>
+        </label>
+        <label class="field-label">Fuso Horário (Timezone)</label>
+        <select id="timezoneOffset">
+          <option value="-5">UTC-5 (Acre)</option>
+          <option value="-4">UTC-4 (Manaus / Cuiabá)</option>
+          <option value="-3">UTC-3 (Brasília / São Paulo)</option>
+          <option value="-2">UTC-2 (Noronha)</option>
+          <option value="-1">UTC-1 (Cabo Verde)</option>
+          <option value="0">UTC 0 (Londres / GMT)</option>
+          <option value="1">UTC+1 (Europa Central)</option>
+        </select>
+        <label class="field-label">Robot ID</label>
+        <input id="robotId" type="text" value="stackchan">
+        <label class="field-label">Nova Senha Web (HTTP Basic <code>stackchan</code>)</label>
+        <div class="input-btn-group">
+          <input id="webPassword" type="password" placeholder="mínimo 8 caracteres">
+          <button type="button" onclick="saveWebPassword()" class="btn-sec" style="white-space:nowrap">Salvar Senha Web</button>
         </div>
       </section>
 
+      <!-- 7. Prompts -->
       <section class="card">
-        <h3>Prompts Adicionais (Overlay)</h3>
-        <label>System Overlay</label>
+        <div class="card-header">
+          <h3 class="card-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> 7. Prompts Adicionais (Overlay)</h3>
+        </div>
+        <label class="field-label">System Overlay</label>
         <textarea id="systemPrompt"></textarea>
-        <label>Persona Overlay</label>
+        <label class="field-label">Persona Overlay</label>
         <textarea id="personaPrompt"></textarea>
-        <div class="btn-bar">
-          <button onclick="savePrompts()" class="btn-primary">Salvar Prompts</button>
-          <button onclick="loadPrompts()" class="btn-sec">Recarregar</button>
+      </section>
+
+      <!-- Barra de Ações Global -->
+      <section class="card card-full" style="background:#FAF5FF;border-color:#E9D5FF">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px">
+          <div>
+            <div style="font-weight:700;font-size:14px;color:#581C87">Salvar alterações da Pix</div>
+            <div style="font-size:12px;color:#7E22CE">Segredos vazios preservam as chaves e senhas já armazenadas no microSD.</div>
+          </div>
+          <div class="btn-bar" style="margin-top:0">
+            <button onclick="saveAllConfig(false)" class="btn-primary">Salvar configurações</button>
+            <button onclick="saveAllConfig(true)" class="btn-outline-danger">Salvar e reiniciar</button>
+            <button onclick="loadRuntime()" class="btn-sec">Recarregar</button>
+          </div>
         </div>
       </section>
     </div>
@@ -607,14 +1155,18 @@ async function loadStatus(){
 
     // Wi-Fi
     const wOk = !!s.wifi_connected;
-    document.getElementById('stWifi').innerHTML = wOk ? '<span class="badge badge-green">Conectado</span>' : '<span class="badge badge-red">Desconectado</span>';
+    document.getElementById('stWifi').innerHTML = wOk ? '<span class="badge badge-green"><span class="status-dot"></span> Conectado</span>' : '<span class="badge badge-red"><span class="status-dot"></span> Desconectado</span>';
+    const bWifi = document.getElementById('badgeWifiStatus');
+    if(bWifi) bWifi.innerHTML = wOk ? '<span class="badge badge-green"><span class="status-dot"></span> Conectado</span>' : '<span class="badge badge-red"><span class="status-dot"></span> Desconectado</span>';
     document.getElementById('stIp').textContent = s.wifi_ip || '--';
     document.getElementById('stRssi').textContent = wOk ? (s.wifi_rssi + ' dBm') : '--';
     document.getElementById('stUptime').textContent = fmtUptime(s.uptime_sec);
 
     // Gemini
     const g = s.gemini || {};
-    document.getElementById('stGeminiConn').innerHTML = g.ready ? '<span class="badge badge-green">Pronto</span>' : (g.connected ? '<span class="badge badge-amber">Conectado</span>' : '<span class="badge badge-gray">Desconectado</span>');
+    document.getElementById('stGeminiConn').innerHTML = g.ready ? '<span class="badge badge-green"><span class="status-dot"></span> Pronto</span>' : (g.connected ? '<span class="badge badge-amber"><span class="status-dot"></span> Conectado</span>' : '<span class="badge badge-gray"><span class="status-dot"></span> Desconectado</span>');
+    const bGemini = document.getElementById('badgeGeminiStatus');
+    if(bGemini) bGemini.innerHTML = g.ready ? '<span class="badge badge-green"><span class="status-dot"></span> Pronto</span>' : (g.connected ? '<span class="badge badge-amber"><span class="status-dot"></span> Conectado</span>' : '<span class="badge badge-gray"><span class="status-dot"></span> Desconectado</span>');
     const tState = g.turn_state || 'IDLE';
     let tBadge = 'badge-gray';
     if(tState==='LISTENING') tBadge = 'badge-green';
@@ -674,6 +1226,46 @@ document.addEventListener('visibilitychange', ()=>{
 });
 
 // CONFIGURAÇÃO
+function togglePass(id){
+  const el = document.getElementById(id);
+  if(el) el.type = (el.type === 'password') ? 'text' : 'password';
+}
+
+let g_lastGeneratedHmac = '';
+
+function generateHmacKey(){
+  const array = new Uint8Array(32);
+  window.crypto.getRandomValues(array);
+  let hex = '';
+  for(let i=0; i<array.length; i++){
+    hex += array[i].toString(16).padStart(2, '0');
+  }
+  hex = hex.toLowerCase();
+  g_lastGeneratedHmac = hex;
+  const input = document.getElementById('gatewayHmacKey');
+  input.type = 'text';
+  input.value = hex;
+  document.getElementById('hmacAlert').style.display = 'block';
+  document.getElementById('btnCopyHmac').style.display = 'inline-block';
+}
+
+async function copyHmacKey(){
+  const val = document.getElementById('gatewayHmacKey').value;
+  if(!val) return;
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(val);
+      notify('Chave HMAC copiada para a área de transferência!', true);
+    }else{
+      document.getElementById('gatewayHmacKey').select();
+      document.execCommand('copy');
+      notify('Chave HMAC copiada!', true);
+    }
+  }catch(e){
+    notify('Erro ao copiar: ' + e, false);
+  }
+}
+
 async function loadRuntime(){
   try{
     const c = await jget('/api/runtime');
@@ -682,8 +1274,17 @@ async function loadRuntime(){
     geminiVoice.value = c.gemini_voice || 'Puck';
     timezoneOffset.value = c.timezone_offset !== undefined ? String(c.timezone_offset) : "-3";
     wifiSsid.value = '';
-    wifiSsid.placeholder = (c.wifi_ssid === 'set') ? 'SSID armazenado; deixe vazio para manter' : 'digite o SSID';
+    wifiSsid.placeholder = (c.wifi_ssid === 'set') ? 'SSID armazenado; deixe vazio para manter' : 'digite o SSID da rede';
+    wifiPassword.value = '';
+    wifiPassword.placeholder = (c.wifi_password === 'set') ? '•••••••••••••• (senha atual preservada)' : 'digite a senha Wi-Fi';
+    geminiKey.value = '';
+    geminiKey.placeholder = (c.gemini_api_key === 'set') ? '•••••••••••••• (chave atual preservada)' : 'digite a API Key do Gemini';
     gatewayUrl.value = c.gateway_base_url || '';
+    gatewayHmacKey.value = '';
+    gatewayHmacKey.type = 'password';
+    gatewayHmacKey.placeholder = (c.gateway_hmac_key === 'set') ? '•••••••••••••• (HMAC atual preservado)' : '64 caracteres hexadecimais; deixe vazio para manter';
+    document.getElementById('hmacAlert').style.display = 'none';
+    document.getElementById('btnCopyHmac').style.display = 'none';
     speakerVolume.value = c.speaker_volume || 200;
     spkVolLabel.textContent = speakerVolume.value;
     micMagnification.value = c.mic_magnification || 16;
@@ -701,15 +1302,54 @@ async function loadRuntime(){
     webEnabled.checked = !!c.web_enabled;
     geminiEnabled.checked = !!c.gemini_enabled;
     gatewayEnabled.checked = !!c.gateway_enabled;
+    await loadPrompts();
     notify('Configurações carregadas com sucesso.', true);
   }catch(e){
     notify('Erro ao carregar configurações: ' + e, false);
   }
 }
 
-async function saveRuntime(reboot){
+async function saveAllConfig(reboot){
   try{
-    const res = await jpost('/api/runtime', {
+    // Validação client-side opcional de HMAC antes do envio
+    const hmacVal = gatewayHmacKey.value.trim();
+    if(hmacVal.length > 0){
+      if(hmacVal.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(hmacVal)){
+        notify('Erro: Chave HMAC deve possuir exatamente 64 caracteres hexadecimais.', false);
+        return;
+      }
+    }
+
+    // 1. Salvar Segredos se houver algum preenchido
+    let hasSecrets = (geminiKey.value.trim().length > 0) ||
+                     (wifiPassword.value.trim().length > 0) ||
+                     (hmacVal.length > 0);
+    if(hasSecrets){
+      const secPayload = {};
+      if(geminiKey.value.trim().length > 0) secPayload.gemini_api_key = geminiKey.value.trim();
+      if(wifiPassword.value.trim().length > 0) secPayload.wifi_password = wifiPassword.value.trim();
+      if(hmacVal.length > 0) secPayload.gateway_hmac_key = hmacVal;
+      const secRes = await jpost('/api/secrets', secPayload);
+      if(!secRes || !secRes.ok){
+        notify('Erro ao salvar segredos: ' + (secRes.message || secRes.error || 'falha'), false);
+        return;
+      }
+      geminiKey.value = '';
+      wifiPassword.value = '';
+      gatewayHmacKey.value = '';
+      gatewayHmacKey.type = 'password';
+      document.getElementById('hmacAlert').style.display = 'none';
+      document.getElementById('btnCopyHmac').style.display = 'none';
+    }
+
+    // 2. Salvar Prompts
+    await jpost('/api/prompts', {
+      system_prompt: systemPrompt.value,
+      persona_prompt: personaPrompt.value
+    });
+
+    // 3. Salvar Runtime
+    const rtRes = await jpost('/api/runtime', {
       robot_id: robotId.value,
       gemini_model: geminiModel.value,
       gemini_voice: geminiVoice.value,
@@ -730,28 +1370,19 @@ async function saveRuntime(reboot){
       gateway_enabled: gatewayEnabled.checked,
       reboot: !!reboot
     });
-    notify(reboot ? 'Configurações salvas. Reiniciando a Pix...' : 'Configurações salvas no SD.', res.ok);
+
+    notify(reboot ? 'Configurações salvas. Reiniciando a Pix...' : 'Configurações salvas com sucesso no SD.', rtRes.ok);
   }catch(e){
-    notify('Erro ao salvar runtime: ' + e, false);
+    notify('Erro ao salvar configurações: ' + e, false);
   }
 }
 
+async function saveRuntime(reboot){
+  return saveAllConfig(reboot);
+}
+
 async function saveSecrets(){
-  try{
-    const res = await jpost('/api/secrets', {
-      gemini_api_key: geminiKey.value,
-      gateway_token: gatewayToken.value,
-      wifi_password: wifiPassword.value,
-      calendar_url: calendarUrl.value
-    });
-    geminiKey.value = '';
-    gatewayToken.value = '';
-    wifiPassword.value = '';
-    calendarUrl.value = '';
-    notify('Segredos atualizados com sucesso.', res.ok);
-  }catch(e){
-    notify('Erro ao salvar segredos: ' + e, false);
-  }
+  return saveAllConfig(false);
 }
 
 async function saveWebPassword(){
@@ -1119,6 +1750,7 @@ void WebConfigServer::handleStatus() {
   doc["gemini_api_key"] = fileExists("/app/StackChan/secrets/gemini_api_key.txt") ? "set" : "missing";
   doc["gateway_token"] = fileExists("/app/StackChan/secrets/gateway_token.txt") ? "set" : "missing";
   doc["calendar_url"] = fileExists("/app/StackChan/secrets/calendar_url.txt") ? "set" : "missing";
+  doc["gateway_hmac_key"] = fileExists(kGatewayHmacKeyPath) ? "set" : "missing";
   doc["free_heap"] = ESP.getFreeHeap();
   doc["max_alloc_heap"] = ESP.getMaxAllocHeap();
   doc["psram_free"] = ESP.getFreePsram();
@@ -1440,6 +2072,32 @@ void WebConfigServer::handleSecretSave() {
   const char* token = in["gateway_token"] | "";
   const char* wifiPassword = in["wifi_password"] | "";
   const char* calendarUrl = in["calendar_url"] | "";
+  const char* hmacKey = in["gateway_hmac_key"] | "";
+
+  String normalizedHmac;
+  if (hmacKey && strlen(hmacKey) > 0) {
+    String raw = String(hmacKey);
+    raw.trim();
+    if (raw.length() != 64) {
+      out["ok"] = false;
+      out["error"] = "invalid_hmac_length";
+      out["message"] = "Chave HMAC deve conter exatamente 64 caracteres hexadecimais.";
+      sendJson(400, out);
+      return;
+    }
+    for (size_t i = 0; i < raw.length(); ++i) {
+      char c = raw[i];
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+        out["ok"] = false;
+        out["error"] = "invalid_hmac_hex";
+        out["message"] = "Chave HMAC contem caracteres nao hexadecimais.";
+        sendJson(400, out);
+        return;
+      }
+    }
+    raw.toLowerCase();
+    normalizedHmac = raw;
+  }
   if (gemini && strlen(gemini) > 0) {
     wrote |= writeTextFile("/app/StackChan/secrets/gemini_api_key.txt", String(gemini));
   }
@@ -1453,6 +2111,9 @@ void WebConfigServer::handleSecretSave() {
     wrote |= writeTextFile("/app/StackChan/secrets/calendar_url.txt", String(calendarUrl));
     googleCalendar.refreshCachedUrl();
   }
+  if (normalizedHmac.length() == 64) {
+    wrote |= writeTextFile(kGatewayHmacKeyPath, normalizedHmac);
+  }
   JsonDocument meta;
   meta["ts"] = millis();
   meta["event"] = "secrets_updated";
@@ -1460,11 +2121,13 @@ void WebConfigServer::handleSecretSave() {
   meta["gateway_token"] = (token && strlen(token) > 0) ? "set" : "unchanged";
   meta["wifi_password"] = (wifiPassword && strlen(wifiPassword) > 0) ? "set" : "unchanged";
   meta["calendar_url"] = (calendarUrl && strlen(calendarUrl) > 0) ? "set" : "unchanged";
+  meta["gateway_hmac_key"] = (normalizedHmac.length() == 64) ? "set" : "unchanged";
   appendJsonLine(kSecretsMetaPath, meta);
   out["ok"] = true;
   out["updated"] = wrote;
   out["gemini_api_key"] = fileExists("/app/StackChan/secrets/gemini_api_key.txt") ? "set" : "missing";
   out["gateway_token"] = fileExists("/app/StackChan/secrets/gateway_token.txt") ? "set" : "missing";
+  out["gateway_hmac_key"] = fileExists(kGatewayHmacKeyPath) ? "set" : "missing";
   out["wifi_password"] = fileExists("/app/StackChan/secrets/wifi_password.txt") ? "set" : "missing";
   out["calendar_url"] = fileExists("/app/StackChan/secrets/calendar_url.txt") ? "set" : "missing";
   sendJson(200, out);
