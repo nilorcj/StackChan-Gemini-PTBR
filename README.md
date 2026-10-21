@@ -188,8 +188,9 @@ Esses arquivos podem continuar sendo reconhecidos internamente pelo firmware par
 
 ### Baseline Validado
 
-* **Baseline funcional do firmware validado:** `56efcb42989d2cd7eca1f404f6796e6b22dc9b6d`
+* **Baseline funcional do firmware validado:** `63deec4f4d24414424babb8b0e9ed18c2c097e31`
 * **Commits principais desta evolução:**
+  * `63deec4` — `chore(gemini): set 3.8 live as default model`
   * `56efcb4` — `feat(web): modernize distributable configuration interface`
   * `4aad207` — `fix(power): set deep sleep timeout to 15 minutes`
   * `4ec1920` — `feat(power): add automatic deep sleep with touch wake`
