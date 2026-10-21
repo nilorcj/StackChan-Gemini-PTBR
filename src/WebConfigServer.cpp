@@ -869,7 +869,7 @@ const char kIndexHtml[] PROGMEM = R"HTML(
           </span>
         </label>
         <label class="field-label">Modelo Gemini</label>
-        <input id="geminiModel" type="text" placeholder="models/gemini-3.1-flash-live-preview">
+        <input id="geminiModel" type="text" placeholder="models/gemini-3.8-live">
         <div class="hint">O modelo pode ser alterado sem recompilar o firmware, desde que compatível com a Gemini Live API.</div>
         <label class="field-label">Voz Gemini</label>
         <select id="geminiVoice">
@@ -1846,7 +1846,7 @@ void WebConfigServer::handleStatus() {
 void WebConfigServer::handleRuntimeGet() {
   JsonDocument doc;
   doc["robot_id"] = config_.robotId;
-  doc["gemini_model"] = "models/gemini-3.1-flash-live-preview";
+  doc["gemini_model"] = "models/gemini-3.8-live";
   doc["gemini_voice"] = "Puck";
   doc["timezone_offset"] = -3;
   doc["timezone_name"] = "UTC-3";
@@ -1920,7 +1920,7 @@ void WebConfigServer::handleRuntimeSave() {
   if (raw.length()) deserializeJson(cfg, raw);
 
   cfg["robot_id"] = in["robot_id"] | (cfg["robot_id"] | config_.robotId);
-  cfg["gemini_model"] = in["gemini_model"] | (cfg["gemini_model"] | "models/gemini-3.1-flash-live-preview");
+  cfg["gemini_model"] = in["gemini_model"] | (cfg["gemini_model"] | "models/gemini-3.8-live");
   cfg["gemini_voice"] = in["gemini_voice"] | (cfg["gemini_voice"] | "Puck");
   int tzOff = in["timezone_offset"] | (cfg["timezone_offset"] | -3);
   if (tzOff < -12) tzOff = -12;

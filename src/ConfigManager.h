@@ -12,7 +12,7 @@ class ConfigManager {
  public:
   struct RuntimeConfig {
     String robotId = "stackchan";
-    String geminiModel = "models/gemini-3.1-flash-live-preview";
+    String geminiModel = "models/gemini-3.8-live";
     String geminiVoice = "Aoede";
     bool wifiEnabled = false;
     bool geminiEnabled = false;

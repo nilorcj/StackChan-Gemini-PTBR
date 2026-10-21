@@ -76,7 +76,7 @@ and enable Gemini in `runtime.json`:
 ```json
 {
   "gemini_enabled": true,
-  "gemini_model": "models/gemini-3.1-flash-live-preview",
+  "gemini_model": "models/gemini-3.8-live",
   "gemini_voice": "Puck"
 }
 ```

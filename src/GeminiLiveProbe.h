@@ -317,7 +317,7 @@ class GeminiLiveProbe {
   bool vad_end_sensitivity_low_ = false; // Fast immediate cut-off
   bool vad_turn_includes_all_input_ = true;
   String api_key_storage_;
-  String model_ = "models/gemini-3.1-flash-live-preview";
+  String model_ = "models/gemini-3.8-live";
   String voice_name_ = "Aoede";
   String system_prompt_;
   String persona_prompt_;
