@@ -129,16 +129,49 @@ A chave compartilhada fica armazenada no cartão microSD da Pix em:
   * exceções e cancelamentos: `EXDATE`, `RECURRENCE-ID` e `STATUS:CANCELLED`.
 * O processamento foi otimizado especificamente para calendários grandes, filtrando blocos relevantes sem expandir todo o histórico desnecessariamente — validado com um calendário ICS real de aproximadamente **2 MB** e milhares de `VEVENT`s dentro do orçamento de CPU do Cloudflare Worker.
 
-### Componente Externo Cloudflare Worker
+### Configuração Distribuível e Cloudflare Worker Próprio
 
-> **Importante:** O código-fonte do Cloudflare Worker **não faz parte deste repositório de firmware**.
+O firmware da Pix foi desenhado para ser totalmente distribuível e independente:
 
-Quem instalar esta versão do firmware e desejar utilizar `web_search` e a agenda via Google Calendar precisa fornecer ou configurar um ToolGateway próprio compatível com o contrato `POST /v2/call`.
+* **Arquitetura de conexão:**
+  * `Pix → Google Gemini Live API` (WebSocket de voz direta, baixa latência);
+  * `Pix → ToolGateway → Cloudflare Worker próprio` (`POST /v2/call` assinado com HMAC-SHA256) `→ TinyFish / Google Calendar / serviços externos`.
+* **Worker individual:** Não existe um Worker público compartilhado embutido no firmware. Cada usuário que compilar ou instalar a Pix deve criar e hospedar seu próprio Cloudflare Worker (ou gateway compatível).
+* **Configuração amigável pela WebView:** A URL do Worker é configurada diretamente pela interface web da Pix, sem necessidade de recompilar código ou alterar manualmente arquivos de configuração no microSD.
+* **Segredos isolados:** Os segredos do Worker nunca devem ser commitados no GitHub nem gravados em texto claro em repositórios.
 
-Na implantação utilizada e validada neste projeto, o Worker requer os seguintes segredos configurados no seu ambiente:
-* `HMAC_SHARED_KEY`
-* `TINYFISH_API_KEY`
-* `CALENDAR_ICS_URL`
+#### Segredos Necessários no Cloudflare Worker
+
+Na implantação de referência utilizada e validada neste projeto, o seu Worker requer três variáveis de ambiente secretas:
+
+1. `HMAC_SHARED_KEY`: Chave secreta compartilhada para autenticar e verificar a integridade de todas as chamadas vindas da Pix via HMAC-SHA256.
+2. `TINYFISH_API_KEY`: Chave de API utilizada pelo Worker para executar a busca web externa (`web_search`).
+3. `CALENDAR_ICS_URL`: URL privada do feed iCalendar (`.ics`) do seu Google Calendar. **Atenção:** Essa URL fica exclusivamente no Worker e **NÃO** deve ser informada nem configurada na Pix.
+
+#### Chave HMAC (Autenticação Pix ↔ Worker)
+
+* A autenticação entre a Pix e o seu ToolGateway utiliza assinaturas criptográficas **HMAC-SHA256** acompanhadas de cabeçalhos de *timestamp* e *nonce* (para proteção contra repetição).
+* Cada instalação deve possuir sua própria chave HMAC exclusiva, formada por **32 bytes aleatórios** e representada como uma string de **64 caracteres hexadecimais em lowercase**.
+* **Onde a chave reside:**
+  * **Na Pix:** salva em `/app/StackChan/secrets/gateway_hmac_key.txt` (armazenada de forma protegida no cartão microSD);
+  * **No Worker:** configurada como o secret `HMAC_SHARED_KEY`.
+* **Fluxo recomendado via WebView:**
+  1. Acesse o painel web da Pix e vá até a aba **Configuração**;
+  2. No cartão **3. ToolGateway**, clique em **Gerar nova chave** (gerada localmente no seu navegador via `window.crypto.getRandomValues()`);
+  3. Clique no botão **Copiar**;
+  4. Cadastre esse mesmo valor no secret `HMAC_SHARED_KEY` do seu Cloudflare Worker (via dashboard da Cloudflare ou `wrangler secret put HMAC_SHARED_KEY`);
+  5. Retorne à WebView da Pix e clique em **Salvar configurações**;
+  6. Uma vez salva, a chave é armazenada de forma segura e nunca mais é exibida ou devolvida pela API HTTP da Pix. Campos de segredo deixados em branco preservam os valores existentes.
+* **Observação de segurança:** O HMAC-SHA256 autentica a requisição, garante a integridade dos parâmetros enviados e previne reutilização não autorizada, mas não substitui o uso de HTTPS/TLS na comunicação de rede. Segredos nunca devem ser expostos em logs públicos.
+
+#### Compatibilidade e Campos Legados
+
+Nas versões anteriores do projeto, a Pix tentava baixar a agenda diretamente e utilizava tokens estáticos:
+* `/app/StackChan/secrets/calendar_url.txt` (Legado)
+* `/app/StackChan/secrets/gateway_token.txt` (Legado)
+
+Esses arquivos podem continuar sendo reconhecidos internamente pelo firmware para compatibilidade retroativa, mas **não fazem mais parte do fluxo produtivo atual** e foram removidos da interface de configuração. O caminho produtivo exclusivo é:
+`gateway_base_url` (configurado na WebView) + `gateway_hmac_key.txt` (HMAC-SHA256).
 
 ### Arquitetura Resumida
 
@@ -155,8 +188,9 @@ Na implantação utilizada e validada neste projeto, o Worker requer os seguinte
 
 ### Baseline Validado
 
-* **Baseline funcional do firmware validado:** `4aad2073c69d3bcc37416dc8b689b8ce4cfcc80b`
+* **Baseline funcional do firmware validado:** `56efcb42989d2cd7eca1f404f6796e6b22dc9b6d`
 * **Commits principais desta evolução:**
+  * `56efcb4` — `feat(web): modernize distributable configuration interface`
   * `4aad207` — `fix(power): set deep sleep timeout to 15 minutes`
   * `4ec1920` — `feat(power): add automatic deep sleep with touch wake`
   * `f1f10c7` — `fix(gemini): remove native Google Search grounding from Live setup`
@@ -333,20 +367,24 @@ Para descobrir o IP da Pix quando ela estiver conectada ao seu roteador:
 
 ---
 
-### 4. Como Acessar o Web Viewer e o que ele oferece
+### 4. Como Acessar o Painel Web (WebView Moderna)
 
 Com a Pix conectada ao seu Wi-Fi e seu computador/smartphone no mesmo roteador:
-* **Painel Principal:** `http://<IP_DA_PIX>/` (ex.: `http://192.168.1.105/`)
+* **Painel Principal:** `http://<IP_DA_PIX>/` (ex.: `http://192.168.0.234/`)
 * **Página de Diagnóstico de Sensores:** `http://<IP_DA_PIX>/sensors`
 
-O Web Viewer oferece controle total através de abas:
-* **Status:** Telemetria em tempo real de bateria, memória livre (Heap e PSRAM), estado do Gemini Live (pronto, ouvindo, falando), chunks de áudio e status dos microfones.
-* **Runtime:** Configuração do volume do alto-falante, ganho do microfone (1 a 24), filtro de ruído, modelo de IA (`geminiModel`), voz sintetizada (`geminiVoice`), fuso horário (`timezoneOffset`) e nome da rede Wi-Fi (`Wi-Fi SSID`).
-* **Secrets:** Armazenamento de chaves e senhas no MicroSD (como senha do Wi-Fi e Gemini API Key; para o ToolGateway `/v2/call`, a chave compartilhada é lida de `/app/StackChan/secrets/gateway_hmac_key.txt`). Os segredos gravados no MicroSD **nunca são exibidos de volta pelo navegador ou API**.
-* **Security:** Configuração opcional de senha para proteger o painel web via HTTP Basic Auth (usuário padrão: `stackchan`). Se nenhuma senha for cadastrada, o painel permanece aberto na rede local.
-* **Gateway:** Teste e configuração de integração com o ToolGateway.
-* **Prompts:** Adição de instruções de comportamento e personalidade adicionais à Pix.
-* **Memory:** Visualização de diálogos recentes, resumos periódicos e busca semântica no banco de memória local.
+A interface web foi completamente reformulada com um tema moderno, limpo e responsivo:
+* **Status:** Telemetria em tempo real de bateria, memória livre (Heap e PSRAM), estado do Gemini Live (pronto, ouvindo, falando), sensores de presença/ToF e ambiente, além de notícias em cache.
+* **Configuração:** Painel organizado em cartões limpos com switches modernos:
+  * **1. Wi-Fi:** Ativação, SSID e senha segura (com botão de visualização temporária).
+  * **2. Gemini Live:** Ativação, modelo de IA configurável em tempo de execução, voz sintetizada e Gemini API Key protegida.
+  * **3. ToolGateway:** Ativação, URL do Cloudflare Worker próprio e gerenciamento de chave HMAC-SHA256 (com gerador criptográfico no navegador e botão de cópia rápida).
+  * **4. Energia e repouso:** Apresentação gráfica informativa dos tempos validados no CoreS3 (~2 min sleep visual → 15 min deep sleep → wake por toque na tela).
+  * **5. Áudio avançado:** Volume principal e seção técnica recolhida (`<details>`) para calibração de ganho, filtro de ruído e parâmetros de VAD sem poluição visual.
+  * **6. Segurança Web & Sistema:** Fuso horário oficial, Robot ID e proteção opcional via HTTP Basic Auth (`stackchan`).
+  * **7. Prompts:** Overlays de sistema e personalidade adicionais.
+  * **Ações Globais:** Botões destacados de "Salvar configurações" e "Salvar e reiniciar", preservando valores existentes quando os campos secretos forem deixados em branco.
+* **Memória:** Visualização de diálogos recentes, resumos periódicos e busca semântica no banco de memória local persistente no microSD.
 
 ---
 
