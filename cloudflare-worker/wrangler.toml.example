@@ -1,0 +1,11 @@
+name = "pix-tool-gateway"
+main = "worker.js"
+compatibility_date = "2024-04-01"
+
+# Variáveis secretas necessárias (configurar via wrangler secret ou painel da Cloudflare):
+# npx wrangler secret put HMAC_SHARED_KEY
+# npx wrangler secret put TINYFISH_API_KEY
+# npx wrangler secret put CALENDAR_ICS_URL
+
+[vars]
+# Variáveis públicas / não sensíveis (opcional)
