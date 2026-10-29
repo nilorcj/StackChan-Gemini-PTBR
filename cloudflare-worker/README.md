@@ -1,12 +1,12 @@
-# Pix ToolGateway — Cloudflare Worker
+# Pix ToolGateway — Cloudflare Worker (StackChan Gemini PT-BR)
 
-Este diretório contém a implementação sanitizada e reprodutível do **Cloudflare Worker** utilizado como **ToolGateway** pela Pix (M5Stack CoreS3).
+Este diretório contém a implementação sanitizada e reprodutível do **Cloudflare Worker** utilizado como **ToolGateway** pelo robô **StackChan Gemini PT-BR** (M5Stack CoreS3).
 
 ---
 
 ## 🎯 Papel do Worker
 
-O Worker atua como um gateway seguro e leve entre a Pix e serviços externos que exigem processamento adicional ou acesso autenticado a APIs de terceiros.
+O Worker atua como um gateway seguro e leve entre o robô e serviços externos que exigem processamento adicional ou acesso autenticado a APIs de terceiros.
 
 A Pix realiza chamadas de ferramentas (*tool calling*) via HTTPS diretamente para este Worker utilizando autenticação criptográfica **HMAC-SHA256**. O Worker valida a integridade, o timestamp e a autenticidade da requisição antes de delegar a execução às ferramentas suportadas.
 
@@ -16,7 +16,7 @@ A Pix realiza chamadas de ferramentas (*tool calling*) via HTTPS diretamente par
 
 | Método | Endpoint | Autenticação | Descrição |
 |---|---|---|---|
-| `POST` | `/v2/call` | **HMAC-SHA256 Obrigatório** | Endpoint produtivo para execução de ferramentas (`web_search`, `get_agenda`, etc.). |
+| `POST` | `/v2/call` | **HMAC-SHA256 Obrigatório** | Endpoint produtivo para execução de ferramentas (`web_search`, `get_agenda`). |
 | `POST` | `/v2/echo` | **HMAC-SHA256 Obrigatório** | Endpoint de diagnóstico e validação do fluxo de assinatura HMAC. |
 | Outros | `/*` | Nenhuma | Retorna HTTP 404 (`{"ok": false, "error": "not_found"}`). |
 
@@ -29,7 +29,7 @@ Toda requisição ao `/v2/call` deve enviar:
 - `Content-Type`: `application/json`.
 - Tamanho máximo do payload: 16 KB.
 
-O cabeçalho `Authorization` legado é rejeitado com HTTP 400 (`authorization_not_allowed`).
+O cabeçalho `Authorization` legado é expressamente rejeitado com HTTP 400 (`authorization_not_allowed`).
 
 ---
 
@@ -38,13 +38,19 @@ O cabeçalho `Authorization` legado é rejeitado com HTTP 400 (`authorization_no
 ### 1. `web_search`
 - **Provedor:** TinyFish API (`https://api.search.tinyfish.ai`)
 - **Parâmetros:** `{"query": "..."}`
-- Executa busca na web em tempo real e retorna os resultados formatados para o modelo Gemini.
+- Executa busca na web em tempo real e retorna até 5 resultados formatados (título, URL, snippet, data e site) para o modelo Gemini.
 
 ### 2. `get_agenda` / `get_daily_agenda`
 - **Provedor:** Google Calendar via URL privada de feed iCalendar (ICS)
 - **Fuso Horário:** `America/Sao_Paulo`
-- **Parâmetros aceitos:** `period` (`today`, `tomorrow`, `this_week`, `date`) e `limit`.
-- Faz o parsing do feed ICS, processa regras de recorrência (`RRULE`, `EXDATE`, `RECURRENCE-ID`), expande eventos recorrentes e retorna apenas os compromissos relevantes do período solicitado.
+- **Parâmetros aceitos:**
+  - `period`: `today` (ou `hoje`), `tomorrow` (ou `amanha`/`amanhã`), e `upcoming` (padrão).
+  - `limit`: quantidade máxima de eventos a retornar (inteiro entre 1 e 20; padrão: 20).
+- **Comportamento dos períodos:**
+  - `today`: filtra eventos que ocorrem hoje no fuso de São Paulo.
+  - `tomorrow`: filtra eventos que ocorrem amanhã no fuso de São Paulo.
+  - `upcoming`: se o período for omitido ou qualquer outro valor for passado, o Worker assume `upcoming` por padrão, retornando os eventos de hoje, de amanhã e os próximos compromissos identificados por dia.
+- Faz o parsing do feed ICS, processa regras de recorrência (`RRULE`, `EXDATE`, `RECURRENCE-ID`), expande eventos recorrentes e retorna apenas os compromissos relevantes do período solicitado, otimizado para calendários extensos.
 
 > **Nota:** As ferramentas de Clima (`get_weather`) e Cotações (`get_currency`) são atendidas diretamente pelo firmware da Pix através de seus caches locais, desonerando o Worker.
 
@@ -52,16 +58,16 @@ O cabeçalho `Authorization` legado é rejeitado com HTTP 400 (`authorization_no
 
 ## 🔐 Variáveis de Ambiente / Secrets Necessários
 
-O Worker espera que os segredos sejam injetados via variáveis de ambiente da Cloudflare (Secrets):
+O Worker espera que os segredos sejam injetados via variáveis de ambiente secretas da Cloudflare (Secrets):
 
 | Nome da Variável | Tipo | Descrição |
 |---|---|---|
-| `HMAC_SHARED_KEY` | Secret | Chave secreta compartilhada para assinatura e validação HMAC-SHA256. |
+| `HMAC_SHARED_KEY` | Secret | Chave secreta compartilhada para assinatura e validação HMAC-SHA256 (64 caracteres hexadecimais). |
 | `TINYFISH_API_KEY` | Secret | Chave de API para o serviço TinyFish de busca na web. |
-| `CALENDAR_ICS_URL` | Secret | URL privada e secreta do feed iCalendar (`.ics`) do Google Agenda. |
+| `CALENDAR_ICS_URL` | Secret | URL privada e secreta (`https://...`) do feed iCalendar (`.ics`) do Google Agenda. |
 
 > [!IMPORTANT]
-> **Sincronização de Chaves:** A chave configurada em `HMAC_SHARED_KEY` no Cloudflare Worker **deve ser exatamente a mesma** cadastrada na Pix através da aba **Configuração** da sua interface Web (WebView). Caso contrário, as requisições serão rejeitadas com HTTP 401 (`unauthorized`).
+> **Sincronização de Chaves:** A chave configurada em `HMAC_SHARED_KEY` no Cloudflare Worker **deve ser exatamente a mesma** cadastrada na Pix através da aba **Configuração** da sua interface Web (WebView) no cartão **3. ToolGateway**. Caso contrário, as requisições serão rejeitadas com HTTP 401 (`unauthorized`).
 
 ---
 
@@ -100,3 +106,4 @@ O Worker espera que os segredos sejam injetados via variáveis de ambiente da Cl
    ```bash
    npx wrangler deploy
    ```
+5. Copie a URL gerada (ex.: `https://pix-tool-gateway.<seu-subdominio>.workers.dev`) e configure-a na interface Web da Pix no campo **URL Base do ToolGateway**.

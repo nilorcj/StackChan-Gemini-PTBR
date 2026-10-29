@@ -1,429 +1,352 @@
-# M5Stack Stack-chan PT-BR Units (Gemini Live)
+# StackChan Gemini PT-BR
+
+🇧🇷 [Português](README.md) | 🇺🇸 [English](README_EN.md)
 
 [![PlatformIO](https://img.shields.io/badge/PlatformIO-ESP32--S3-orange.svg)](https://platformio.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![M5Stack CoreS3](https://img.shields.io/badge/Hardware-M5Stack%20CoreS3-blue.svg)](https://m5stack.com/)
 [![Gemini Live](https://img.shields.io/badge/AI-Google%20Gemini%20Live-4285F4.svg)](https://ai.google.dev/)
 
-Firmware avançado para o robô **M5Stack CoreS3 Stack-chan** com conversação por voz em tempo real (**Google Gemini Live API**) em **Português do Brasil (PT-BR)**, integração com o ecossistema de **M5Stack Units** via multiplexador I2C **PaHub**, sistema inteligente de conversação armada por gestos e toque (**Gesture-Armed Listening**) e integração com ferramentas externas via **ToolGateway assinado com HMAC-SHA256**.
+Firmware avançado para o robô **M5Stack CoreS3 Stack-chan** com conversação por voz em tempo real (**Google Gemini Live API**) em **Português do Brasil (PT-BR)**, suporte a periféricos modulares do ecossistema **M5Stack Units**, sistema inteligente de conversação armada por toque e gestos (*Gesture-Armed Listening*), gerenciamento profundo de energia com despertar por toque e integração com ferramentas externas via **ToolGateway assinado com HMAC-SHA256**.
+
+* **Repositório oficial:** [https://github.com/nilorcj/StackChan-Gemini-PTBR](https://github.com/nilorcj/StackChan-Gemini-PTBR)
+* **Base de hardware recomendada:** M5Stack CoreS3 + Base Stack-chan + Cartão MicroSD FAT32.
 
 ---
 
-## 🌟 Origem e Reconhecimento
+## 🌟 1. Apresentação do Projeto
 
-Este projeto foi desenvolvido com base no firmware experimental inicial de [taranton/stackchan-gemini-firmware](https://github.com/taranton/stackchan-gemini-firmware), que estabeleceu a conexão inicial de voz com Gemini Live no ESP32-S3.
+O **StackChan Gemini PT-BR** transforma o robô de mesa M5Stack CoreS3 em um assistente físico conversacional expressivo e inteligente. Utilizando a API de voz bidirecional de baixíssima latência do **Google Gemini Live**, o robô conversa naturalmente em português brasileiro, demonstra expressões faciais procedurais, movimenta a cabeça e executa ferramentas locais e externas.
 
-A partir dessa base, este repositório traz uma reformulação arquitetural profunda: suporte a periféricos modulares externos (Units M5Stack), eliminação de falsos disparos de voz com detecção de gestos ToF, localização completa em PT-BR, cache local de feeds e integração externa enxuta via ToolGateway no ESP32-S3.
+### Origem e Reconhecimento
+Este projeto foi desenvolvido com base no firmware experimental inicial de [taranton/stackchan-gemini-firmware](https://github.com/taranton/stackchan-gemini-firmware), pioneiro na conexão de voz com o Gemini Live no ESP32-S3.
 
----
-
-## 🚀 O que há de novo nesta versão
-
-### 1. Sistema de Conversação Armada por Gesto e Toque (*Gesture-Armed Listening*)
-Em assistentes de voz convencionais, ruídos de fundo (como televisores, rádios ou conversas paralelas) causam interrupções indesejadas e custos desnecessários de API. Este firmware introduz uma máquina de estados segura:
-* **Modo DISARMED (Padrão):** O microfone permanece fechado. Nenhum dado de áudio ou PCM é transmitido ao Gemini.
-* **Presença Passiva Inteligente:** A presença de pessoas detectada pelo sensor ToF ou PIR acorda o robô e ativa expressões faciais no display, mas **nunca** abre o microfone espontaneamente.
-* **Armação Consciente:** A escuta é armada exclusivamente por:
-  * **Aceno de mão (`FAST_GESTURE` / `HAND_WAVE`):** Gesto rápido e intencional em frente ao sensor Laser ToF.
-  * **Toque na Tela (`TOUCH`):** Toque na tela capacitiva do CoreS3.
-* **Conversação Contínua:** Uma vez armada, a conversa flui naturalmente turno a turno sem exigir novos gestos a cada fala.
-* **Desarmamento por Timeout:** Se houver 15 segundos contínuos de silêncio/inatividade em modo de escuta, o robô encerra o turno e retorna automaticamente ao estado `DISARMED`.
-
-### 2. Suporte ao Ecossistema M5Stack Units via PaHub (I2C Multiplexer)
-Expansão da Porta A I2C do CoreS3 através do **Unit PaHub** (PCA9548AP / TCA9548A) para permitir múltiplos módulos simultâneos:
-* **Canal 0 — Unit ToF (VL53L0X / VL53L1X):** Medição de distância a laser de alta precisão, responsável pelo rastreamento de presença (entrada a <850mm, saída a >1000mm) e detecção de gestos cinemáticos (`HAND_WAVE`) com filtro anti-outliers.
-* **Canal 1 — Unit ENV (SHT30 / QMP6988):** Monitoramento ambiental em tempo real (temperatura, umidade relativa e pressão atmosférica).
-* **Feedback Tátil (Unit Vibrator):** Motor háptico configurável com múltiplos padrões emocionais (`Purr`, `CatPurr`, `Alert`, `Angry`, `Click`, `Shake`, etc.).
-
-### 3. Otimizações de Performance e Estabilidade do ESP32-S3
-* **Audio I2S DMA Coalescing & Ring Buffers:** Transmissão de pacotes PCM 16 kHz otimizada em buffers de anel para evitar gargalos de rede, ruídos de buffer underrun e estalos.
-* **Renderização Facial com Dirty Flags:** O display redesenha apenas as áreas dos olhos e boca que sofreram alteração geométrica, liberando dezenas de milissegundos de CPU para a criptografia TLS/WebSocket do Gemini Live.
-* **Suavização Cinemática dos Servos (Pan/Tilt):** Movimentação com interpolação suave que elimina ruídos de alta frequência (jitter) e evita quedas de tensão na alimentação do CoreS3.
-
-### 4. Localização Nativa em Português do Brasil (PT-BR)
-* Prompts de sistema, persona do Stack-chan e ferramentas ajustados nativamente para expressividade, clareza e sotaque brasileiro ao utilizar as vozes de baixa latência do Gemini Live.
+A partir desse ponto de partida, este repositório implementa uma evolução arquitetural completa:
+- **Localização total em PT-BR** (persona, prompts de sistema, comandos de fala e interface de configuração);
+- **Sistema de escuta armada (*Gesture-Armed Listening*)**, eliminando falsos disparos causados por ruídos de ambiente;
+- **Integração modular com M5Stack Units** (PaHub, ToF Laser, Sensor Ambiental ENV e Feedback Háptico);
+- **ToolGateway seguro via Cloudflare Worker com HMAC-SHA256** para busca web atualizada e consulta de agenda pessoal;
+- **Gerenciamento de energia avançado com deep sleep automático de 15 minutos** e despertar capacitivo por toque;
+- **Interface Web de Configuração (WebView) moderna, responsiva e distribuível**.
 
 ---
 
-## 🔌 ToolGateway, Busca Web e Agenda
+## 🚀 2. Principais Funcionalidades
 
-A arquitetura atual separa claramente as **ferramentas locais** (que rodam diretamente na Pix sem bloqueio de rede durante a fala) das **ferramentas externas** (que são delegadas ao ToolGateway remoto em Cloudflare Worker).
-
-* **Local na Pix:**
-  * Sensores físicos (`get_sensor_readings`) e telemetria do robô (`get_robot_status`);
-  * Data e hora local oficial sincronizada via NTP/RTC (`get_current_datetime`);
-  * Clima de Brasília via cache local (`get_weather`);
-  * Cotação USD/BRL via cache local (`get_currency`);
-  * Manchetes de notícias via cache RSS local (`get_news`); a atualização explícita dos feeds (`refresh_news_feeds`) acessa a internet para renovar esse cache;
-  * Memória persistente e privada no microSD (`search_memory`, `remember_fact`, `remember_private_memory`, `recall_private_memory`);
-  * Comandos físicos e de sessão (`servo_gesture`, `head_motion`, `set_emotion`, `set_speaker_volume`, `look_with_camera`, `end_session`).
-* **Externo via ToolGateway:**
-  * Busca web atualizada (`web_search`);
-  * Agenda do Google Calendar (`get_daily_agenda` → `get_agenda`).
-
-**Fluxo de busca web:**
-```text
-Pix → ToolGatewayClient → POST /v2/call → Cloudflare Worker → TinyFish → resposta para o Gemini Live
-```
-
-**Fluxo da agenda:**
-```text
-Pix → get_daily_agenda → GeminiToolBridge → mapeamento interno para get_agenda → POST /v2/call → Cloudflare Worker → Google Calendar ICS → resposta estruturada para o Gemini
-```
-> **Nota de compatibilidade:** O modelo Gemini Live continua vendo e chamando a função declarada `get_daily_agenda`, mas o firmware (`GeminiToolBridge`) roteia internamente a chamada para a tool `get_agenda` no ToolGateway.
-
-### Autenticação do ToolGateway (HMAC-SHA256)
-
-O endpoint produtivo utilizado pelo firmware é:
-```text
-POST /v2/call
-```
-
-Cada requisição enviada pela Pix é assinada com **HMAC-SHA256** sobre uma string canônica composta por:
-* método HTTP (`POST`);
-* path (`/v2/call`);
-* timestamp Unix atual em segundos;
-* nonce aleatório de 32 caracteres hexadecimais;
-* body JSON exato da requisição.
-
-A requisição inclui os cabeçalhos HTTP de autenticação:
-* `X-Timestamp`
-* `X-Nonce`
-* `X-Signature`
-
-A chave compartilhada fica armazenada no cartão microSD da Pix em:
-```text
-/app/StackChan/secrets/gateway_hmac_key.txt
-```
-* Esse arquivo deve conter exatamente uma chave de **64 caracteres hexadecimais**.
-* O mesmo segredo deve estar configurado no ambiente do Cloudflare Worker como `HMAC_SHARED_KEY`.
-* **Importante sobre segurança de transporte:** O HMAC autentica a requisição e protege sua integridade. O timestamp e o nonce ajudam a mitigar requisições antigas ou repetidas, mas o HMAC por si só não criptografa o conteúdo transportado quando o gateway é acessado por HTTP nem elimina completamente ataques de replay dentro da janela de validade aceita pelo servidor.
-* **Legado:** O arquivo `/app/StackChan/secrets/gateway_token.txt` (Bearer token) é legado e **não é usado** pelo caminho produtivo atual de `POST /v2/call`.
-
-### Busca Web Atualizada
-
-* O Gemini Live pode acionar a ferramenta `web_search` quando precisa consultar informações externas atualizadas ou quando solicitado pelo usuário.
-* O firmware envia a consulta para o ToolGateway via `POST /v2/call`.
-* O Cloudflare Worker executa a pesquisa utilizando a API **TinyFish** e devolve resultados estruturados contendo **título, URL, data, site e snippet** (atualmente até **5 resultados** por consulta).
-* Esse fluxo via ToolGateway substitui a dependência do Google Search Grounding como caminho produtivo principal de `web_search` na Pix (o Grounding nativo foi removido do setup da Live API, operando a busca exclusivamente via gateway).
-
-### Compatibilidade com Gemini Free Tier
-
-* **Remoção do Grounding nativo:** O Google Search Grounding nativo foi removido do setup da Gemini Live. Anteriormente, ele era enviado em toda sessão no array `setup.tools` como `{"googleSearch": {}}`.
-* **Causa e resolução da conexão Free Tier:** Na configuração testada, a presença do Google Search Grounding impedia a conexão com a chave Free Tier; sua remoção resolveu o problema. Mantendo a mesma chave Free Tier instalada no microSD e removendo apenas o Grounding nativo, a Pix passou a conectar normalmente (`connected=true`, `ready=true`).
-* **Validação de voz e áudio:** A conversa por voz e a fluidez do áudio foram validadas na prática após a mudança.
-* **Busca web preservada via ToolGateway:** Isso **não** remove a busca web da Pix: a ferramenta `web_search` continua operando pelo caminho `Pix → ToolGateway → /v2/call → Cloudflare Worker → TinyFish`, tornando o Google Search Grounding nativo dispensável na arquitetura atual.
-* **Independência de busca:** Essa separação permite utilizar a Gemini Live sem depender do Grounding nativo do Google para pesquisas externas.
-
-### Google Calendar via ToolGateway
-
-* No fluxo produtivo atual, a agenda **não é mais baixada nem processada diretamente pelo ESP32-S3 da Pix**, evitando consumo excessivo de RAM/CPU e conexões TLS pesadas durante a sessão de voz.
-* O Cloudflare Worker acessa o feed privado do Google Calendar através do segredo de ambiente `CALENDAR_ICS_URL`.
-* O firmware **não precisa** receber a URL privada do calendário (`calendar_url.txt`) no microSD para esse fluxo.
-* O Cloudflare Worker suporta os períodos `today`, `tomorrow` e `upcoming` no fuso `America/Sao_Paulo`. Como a função atualmente declarada ao Gemini é `get_daily_agenda` sem parâmetros e o firmware a converte em `get_agenda`, sem `period` explícito o Worker utiliza `upcoming` como padrão — retornando compromissos de hoje, amanhã e próximos eventos identificados por dia.
-* O parser ICS do Worker trata:
-  * eventos únicos;
-  * eventos de dia inteiro (`VALUE=DATE`);
-  * recorrências `DAILY`, `WEEKLY`, `MONTHLY` e `YEARLY`;
-  * modificadores `COUNT`, `UNTIL`, `INTERVAL`, `BYDAY` e `BYMONTHDAY`;
-  * exceções e cancelamentos: `EXDATE`, `RECURRENCE-ID` e `STATUS:CANCELLED`.
-* O processamento foi otimizado especificamente para calendários grandes, filtrando blocos relevantes sem expandir todo o histórico desnecessariamente — validado com um calendário ICS real de aproximadamente **2 MB** e milhares de `VEVENT`s dentro do orçamento de CPU do Cloudflare Worker.
-
-### Configuração Distribuível e Cloudflare Worker Próprio
-
-O firmware da Pix foi desenhado para ser totalmente distribuível e independente:
-
-* **Arquitetura de conexão:**
-  * `Pix → Google Gemini Live API` (WebSocket de voz direta, baixa latência);
-  * `Pix → ToolGateway → Cloudflare Worker próprio` (`POST /v2/call` assinado com HMAC-SHA256) `→ TinyFish / Google Calendar / serviços externos`.
-* **Worker individual:** Não existe um Worker público compartilhado embutido no firmware. Cada usuário que compilar ou instalar a Pix deve criar e hospedar seu próprio Cloudflare Worker (ou gateway compatível).
-* **Configuração amigável pela WebView:** A URL do Worker é configurada diretamente pela interface web da Pix, sem necessidade de recompilar código ou alterar manualmente arquivos de configuração no microSD.
-* **Segredos isolados:** Os segredos do Worker nunca devem ser commitados no GitHub nem gravados em texto claro em repositórios.
-
-#### Segredos Necessários no Cloudflare Worker
-
-Na implantação de referência utilizada e validada neste projeto, o seu Worker requer três variáveis de ambiente secretas:
-
-1. `HMAC_SHARED_KEY`: Chave secreta compartilhada para autenticar e verificar a integridade de todas as chamadas vindas da Pix via HMAC-SHA256.
-2. `TINYFISH_API_KEY`: Chave de API utilizada pelo Worker para executar a busca web externa (`web_search`).
-3. `CALENDAR_ICS_URL`: URL privada do feed iCalendar (`.ics`) do seu Google Calendar. **Atenção:** Essa URL fica exclusivamente no Worker e **NÃO** deve ser informada nem configurada na Pix.
-
-#### Chave HMAC (Autenticação Pix ↔ Worker)
-
-* A autenticação entre a Pix e o seu ToolGateway utiliza assinaturas criptográficas **HMAC-SHA256** acompanhadas de cabeçalhos de *timestamp* e *nonce* (para proteção contra repetição).
-* Cada instalação deve possuir sua própria chave HMAC exclusiva, formada por **32 bytes aleatórios** e representada como uma string de **64 caracteres hexadecimais em lowercase**.
-* **Onde a chave reside:**
-  * **Na Pix:** salva em `/app/StackChan/secrets/gateway_hmac_key.txt` (armazenada de forma protegida no cartão microSD);
-  * **No Worker:** configurada como o secret `HMAC_SHARED_KEY`.
-* **Fluxo recomendado via WebView:**
-  1. Acesse o painel web da Pix e vá até a aba **Configuração**;
-  2. No cartão **3. ToolGateway**, clique em **Gerar nova chave** (gerada localmente no seu navegador via `window.crypto.getRandomValues()`);
-  3. Clique no botão **Copiar**;
-  4. Cadastre esse mesmo valor no secret `HMAC_SHARED_KEY` do seu Cloudflare Worker (via dashboard da Cloudflare ou `wrangler secret put HMAC_SHARED_KEY`);
-  5. Retorne à WebView da Pix e clique em **Salvar configurações**;
-  6. Uma vez salva, a chave é armazenada de forma segura e nunca mais é exibida ou devolvida pela API HTTP da Pix. Campos de segredo deixados em branco preservam os valores existentes.
-* **Observação de segurança:** O HMAC-SHA256 autentica a requisição, garante a integridade dos parâmetros enviados e previne reutilização não autorizada, mas não substitui o uso de HTTPS/TLS na comunicação de rede. Segredos nunca devem ser expostos em logs públicos.
-
-#### Compatibilidade e Campos Legados
-
-Nas versões anteriores do projeto, a Pix tentava baixar a agenda diretamente e utilizava tokens estáticos:
-* `/app/StackChan/secrets/calendar_url.txt` (Legado)
-* `/app/StackChan/secrets/gateway_token.txt` (Legado)
-
-Esses arquivos podem continuar sendo reconhecidos internamente pelo firmware para compatibilidade retroativa, mas **não fazem mais parte do fluxo produtivo atual** e foram removidos da interface de configuração. O caminho produtivo exclusivo é:
-`gateway_base_url` (configurado na WebView) + `gateway_hmac_key.txt` (HMAC-SHA256).
-
-### Arquitetura Resumida
-
-| Recurso | Onde executa | Dependência externa |
-| :--- | :--- | :--- |
-| **Sensores** (`get_sensor_readings`) | Pix | nenhuma |
-| **Clima** (`get_weather`) | cache local na Pix | atualização de feed já existente |
-| **USD/BRL** (`get_currency`) | cache local na Pix | atualização de feed já existente |
-| **Notícias** (`get_news`) | Pix / cache RSS | feeds RSS |
-| **Busca web** (`web_search`) | Cloudflare ToolGateway | TinyFish |
-| **Agenda** (`get_daily_agenda` → `get_agenda`) | Cloudflare ToolGateway | Google Calendar ICS |
-| **Gemini Live** | Pix + Google | Gemini Live API |
-| **Memória** (`search_memory`, `remember_*`, `recall_*`) | Pix / microSD | nenhuma para memória local |
-
-### Baseline Validado
-
-* **Baseline funcional do firmware validado:** `63deec4f4d24414424babb8b0e9ed18c2c097e31`
-* **Commits principais desta evolução:**
-  * `63deec4` — `chore(gemini): set 3.8 live as default model`
-  * `56efcb4` — `feat(web): modernize distributable configuration interface`
-  * `4aad207` — `fix(power): set deep sleep timeout to 15 minutes`
-  * `4ec1920` — `feat(power): add automatic deep sleep with touch wake`
-  * `f1f10c7` — `fix(gemini): remove native Google Search grounding from Live setup`
-  * `383d6e1` — `feat(tools): route web search and agenda through ToolGateway`
-  * `fa6e21b` — `feat(gateway): add HMAC-SHA256 signing and migrate callTool to /v2/call`
-  * `80d55d5` — `feat(tools): use local weather and currency caches`
+- **Conversação Fluida em Tempo Real:** Streaming contínuo de áudio PCM 16 kHz com o modelo `models/gemini-3.8-live` em português brasileiro, com baixa latência e interrupção natural de fala (*barge-in*).
+- **Escuta Consciente e Armada:** O robô nunca abre o microfone por ruídos aleatórios. A escuta é ativada exclusivamente por aceno de mão em frente ao sensor Laser ToF ou por toque na tela touchscreen.
+- **Botão de Mudo Físico (Estilo Alexa):** Um clique rápido no botão de energia desliga o microfone e bloqueia conversas até ser desativado.
+- **Rosto Expressivo Procedural:** Olhos e boca dinâmicos desenhados via código no display do CoreS3, com animações de piscada, estados emocionais e gaveta de status rápido (*swipe down* no topo da tela).
+- **Movimentação Pan/Tilt:** Movimentação cinemática suave da cabeça por servos seriais ou PWM na base Stack-chan.
+- **Ferramentas Locais da Pix:**
+  - `get_sensor_readings`: Leitura de distância, temperatura, umidade e pressão de mesa;
+  - `get_current_datetime`: Horário e data oficial sincronizados via NTP/RTC;
+  - `get_weather` e `get_currency`: Clima de Brasília e cotação do dólar USD/BRL em cache local;
+  - `get_news`: Manchetes de notícias RSS em cache local;
+  - `set_speaker_volume`: Controle físico de volume;
+  - `search_memory` e `remember_fact`: Memória de longo prazo persistida no microSD.
+- **Ferramentas Externas via ToolGateway:**
+  - `web_search`: Busca web em tempo real via API TinyFish;
+  - `get_agenda`: Consulta inteligente à agenda do Google Calendar a partir de feed iCalendar privado.
+- **Painel de Configuração Web Moderno:** WebView protegida na porta 80 para configuração completa de Wi-Fi, IA, ToolGateway, áudio e memórias, com gerador de chaves HMAC integrado.
 
 ---
 
-## ⚡ Gerenciamento de Energia e Sleep
+## 🧩 3. Hardware Obrigatório, Recomendado e Opcional
 
-### Deep Sleep automático
+> [!IMPORTANT]
+> **Módulos externos NÃO são obrigatórios para a conversa básica.** O firmware foi estruturado para permitir conversação com o Gemini Live utilizando apenas o **M5Stack CoreS3**, um **cartão MicroSD** e a sua conexão Wi-Fi.
 
-Comportamento final validado no CoreS3:
+### Tabela de Componentes
 
-- após ~2 minutos sem interação:
-  a Pix entra no sleep visual/comportamental atual;
+| Componente | Obrigatoriedade | Funcionamento sem o componente |
+|---|---|---|
+| **M5Stack CoreS3** | **Obrigatório** | Controlador central do robô. Fornece o processador ESP32-S3, display touchscreen, microfones duplos, alto-falante, câmera e circuitos de alimentação. |
+| **Cartão MicroSD** | **Obrigatório** *(na versão atual)* | Armazena configurações (`runtime.json`), segredos de rede/API, prompts e memória persistente. Sem o MicroSD, o firmware não inicializa a rede nem a conexão com o Gemini. Deve ser formatado em **FAT32**. |
+| **Base Motorizada / Servos** | **Recomendado** | Confere expressividade física (Pan/Tilt). Se a base não estiver conectada, o firmware prossegue a inicialização após um timeout de 1,2s do expansor IO; o microcontrolador mantém a execução de voz, display e áudio. *(Essa operação como assistente estático é prevista na implementação de software, mas ainda não foi validada em testes físicos de bancada sem a base montada).* |
+| **Unit PaHub** | **Opcional** | Multiplexador I2C (PCA9548AP) para a Porta A. Se ausente, o firmware segue a inicialização sem travar; portas I2C adicionais ficam inativas. *(Confirmado no código).* |
+| **Unit ToF (Laser)** | **Opcional** | Mede distância e reconhece acenos de mão para armação de conversa. Se ausente, **a conversa pode ser iniciada a qualquer momento tocando na tela touchscreen**. *(Confirmado no código).* |
+| **Unit ENV (III/IV)** | **Opcional** | Mede temperatura, umidade e pressão atmosférica local. Se ausente, a ferramenta `get_sensor_readings` retorna erro tratado; previsões de clima via internet continuam operacionais. *(Confirmado no código).* |
+| **Unit Vibrator (U059)** | **Opcional** | Motor háptico conectado à Porta B (GPIO 9) para feedback tátil (ronronar, cliques). Se ausente, os comandos de vibração são inócuos e o robô opera normalmente. *(Confirmado no código).* |
 
-- após 15 minutos sem interação real:
-  a Pix entra automaticamente em deep sleep;
+### Cenário Mínimo de Funcionamento
+O menor conjunto funcional para colocar a Pix para conversar consiste em:
+1. **M5Stack CoreS3** conectado à energia USB-C;
+2. **Cartão MicroSD (FAT32)** inserido no CoreS3 com a estrutura básica;
+3. Rede **Wi-Fi 2.4 GHz** com acesso à internet;
+4. **Chave de API do Google Gemini** (Google AI Studio).
 
-- presença contínua do ToF NÃO impede o deep sleep;
-  o timer profundo usa atividade real separada;
-
-- antes do deep sleep:
-  - servos são parados;
-  - torque e alimentação dos servos são desligados;
-  - Gemini é desconectado intencionalmente;
-  - haptic é parado;
-  - mic/speaker são encerrados;
-  - LEDs são apagados;
-  - alimentação externa de 5 V é cortada;
-  - Wi-Fi é desligado;
-
-- deep sleep usa:
-  `M5.Power.deepSleep(M5.Power.sleep_no_timer, true)`
-
-- wake:
-  toque na tela;
-  CoreS3 GPIO21 / EXT1 / AW9523 INTN;
-
-- após o toque:
-  ocorre boot normal;
-  Wi-Fi reconecta;
-  HTTP retorna;
-  Gemini Live reconecta e fica ready.
-
-*Fluxo validado em hardware.*
+Nesse modo compacto, sem nenhum sensor ou servo conectado, a conversa pode ser iniciada tocando na tela da Pix!
 
 ---
 
-## 🛠️ Hardware Necessário
+## 📦 4. Instalação do Firmware
 
-* **Controlador:** [M5Stack CoreS3](https://docs.m5stack.com/en/core/CoreS3) (ESP32-S3).
-* **Base Stack-chan:** Base motorizada com servos seriais (ex.: SCS0009 / Feetech ou servos PWM compatíveis).
-* **Armazenamento:** Cartão MicroSD (formatado em FAT32).
-* **Módulos I2C / Porta A:**
-  * [M5Stack Unit PaHub](https://docs.m5stack.com/en/unit/pahub) (Multiplexador I2C).
-  * [M5Stack Unit ToF / ToF4M](https://docs.m5stack.com/en/unit/tof) (Conectado ao Canal 0 do PaHub).
-  * *(Opcional)* [M5Stack Unit ENV III/IV](https://docs.m5stack.com/en/unit/envIII) (Conectado ao Canal 1 do PaHub).
-* **Módulos Porta B:**
-  * *(Opcional)* [M5Stack Unit Vibrator](https://docs.m5stack.com/en/unit/vibrator) (Conectado à Porta B, GPIO 9).
+Você pode instalar o firmware de duas maneiras: utilizando binários pré-compilados ou compilando o código-fonte com o PlatformIO.
 
----
+### Método A: Firmware Pré-Compilado (GitHub Release)
 
-## 📦 Como Instalar e Rodar
+> [!NOTE]
+> **Disponibilidade e Visibilidade da Release:** A release oficial `v1.0.0` está em fase de preparação documental e não está disponível para download antes de sua publicação formal na página de [Releases do GitHub](https://github.com/nilorcj/StackChan-Gemini-PTBR/releases). Adicionalmente, enquanto o repositório permanecer em modo privado, os binários e páginas de release só serão visíveis para usuários autenticados com permissão explícita de acesso ao projeto.
 
-### 1. Clonar o repositório
+O ESP32-S3 com partição de 16 MB requer 4 arquivos gravados em endereços específicos da memória flash. Gravar apenas o `firmware.bin` em uma placa virgem ou com outro firmware não é suficiente, pois a tabela de partições e o bootloader precisam coincidir:
+
+| Arquivo | Endereço Flash | Descrição |
+|---|---|---|
+| `bootloader.bin` | `0x0000` | Bootloader do ESP32-S3 |
+| `partitions.bin` | `0x8000` | Tabela de partições configurada para 16 MB |
+| `boot_app0.bin` | `0xe000` | Seletor de boot OTA (padrão Espressif) |
+| `firmware.bin` | `0x10000` | Imagem da aplicação StackChan Gemini PT-BR |
+
+Quando os binários da release estiverem disponíveis, você poderá gravá-los usando o utilitário oficial `esptool`:
+
+#### Comando em linha única (compatível com Windows PowerShell, CMD, Linux e macOS):
 ```bash
-git clone https://github.com/nilorcj/M5-Stackchan-PT-BR-Units.git
-cd M5-Stackchan-PT-BR-Units
+esptool.py --chip esp32s3 --port PORTA_SERIAL --baud 115200 write_flash -z 0x0000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin 0x10000 firmware.bin
 ```
 
-### 2. Configurar o Cartão MicroSD
-Crie a estrutura de diretórios no cartão SD (veja detalhes adicionais em [docs/SD_LAYOUT.md](docs/SD_LAYOUT.md)):
-```text
-/app/StackChan/
-├── config/
-│   ├── runtime.json
-│   └── gateway.json
-├── prompts/
-│   ├── system.txt
-│   └── persona.txt
-└── secrets/
-    ├── gemini_api_key.txt
-    ├── wifi_password.txt
-    └── gateway_hmac_key.txt
+#### No Windows (PowerShell):
+```powershell
+esptool.py --chip esp32s3 --port COM3 --baud 115200 write_flash -z `
+  0x0000 bootloader.bin `
+  0x8000 partitions.bin `
+  0xe000 boot_app0.bin `
+  0x10000 firmware.bin
 ```
 
-* `gateway_hmac_key.txt` (chave hexadecimal de 64 caracteres) **só é necessário se `gateway_enabled=true`**.
-* `gateway_token.txt` não é requisito da arquitetura atual (`/v2/call` usa assinatura HMAC-SHA256).
-* `calendar_url.txt` no microSD não é requisito para a agenda atual via Cloudflare ToolGateway (a URL ICS fica configurada como segredo `CALENDAR_ICS_URL` no Worker).
-
-#### Configuração do Gateway (`gateway.json` ou `runtime.json`)
-Para habilitar o ToolGateway, configure os campos abaixo (em `/app/StackChan/config/gateway.json` ou diretamente em `runtime.json`):
-```json
-{
-  "gateway_enabled": true,
-  "gateway_base_url": "http://SEU_WORKER_OU_GATEWAY",
-  "robot_id": "pix"
-}
+#### No Windows (Prompt de Comando / CMD):
+```cmd
+esptool.py --chip esp32s3 --port COM3 --baud 115200 write_flash -z ^
+  0x0000 bootloader.bin ^
+  0x8000 partitions.bin ^
+  0xe000 boot_app0.bin ^
+  0x10000 firmware.bin
 ```
-* `gateway_base_url` aponta para o endereço do Worker/gateway configurado pelo usuário (sem barra final necessária);
-* O firmware acrescenta automaticamente o sufixo `/v2/call` ao invocar ferramentas externas;
-* O relógio do ESP32 precisa estar sincronizado via NTP/RTC (`time(nullptr)` válido) para gerar o `X-Timestamp` aceito na validação HMAC.
 
-### 3. Compilar e Gravar o Firmware
-Certifique-se de ter o [PlatformIO Core](https://platformio.org/) instalado:
+#### No Linux / macOS (Bash):
 ```bash
-# Compilar o firmware
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 115200 write_flash -z \
+  0x0000 bootloader.bin \
+  0x8000 partitions.bin \
+  0xe000 boot_app0.bin \
+  0x10000 firmware.bin
+```
+*(Consulte [docs/BUILD_FLASH.md](docs/BUILD_FLASH.md) para detalhes adicionais).*
+
+### Método B: Compilação Manual com PlatformIO
+Se preferir compilar diretamente a partir do código-fonte:
+1. Instale o [PlatformIO Core](https://platformio.org/) ou a extensão no VS Code.
+2. Clone o repositório oficial:
+   ```bash
+   git clone https://github.com/nilorcj/StackChan-Gemini-PTBR.git
+   cd StackChan-Gemini-PTBR
+   ```
+3. Conecte o CoreS3 via cabo USB-C e compile/grave com um único comando:
+   ```bash
+   pio run -e m5stack-cores3 -t upload
+   ```
+   *(O PlatformIO baixa automaticamente todas as bibliotecas e grava os offsets corretos).*
+
+---
+
+## 🛠️ 5. Primeira Configuração
+
+Para que a Pix possa operar, o cartão MicroSD (formatado em FAT32) deve estar inserido no slot do CoreS3. Você pode realizar a configuração inicial por qualquer uma das duas abordagens abaixo:
+
+### Opção 1: Configuração Inicial Guiada pela WebView (Modo SoftAP)
+Esta é a abordagem mais prática, pois dispensa a criação manual de arquivos no computador:
+1. Insira o cartão MicroSD formatado em FAT32 no CoreS3 (pode estar vazio);
+2. Ligue o CoreS3. Como não há dados de Wi-Fi gravados, após 15 segundos na tela de boot o robô iniciará automaticamente o ponto de acesso Wi-Fi de configuração:
+   - **SSID:** `<robot_id>-setup-XXXX` (por exemplo: `stackchan-setup-XXXX` ou `pix-setup-XXXX`, onde `XXXX` são os 4 caracteres hexadecimais finais do MAC da placa);
+   - **Senha:** `stackchanXXXX`;
+3. Conecte seu smartphone ou computador à rede da Pix e abra no navegador:
+   ```text
+   http://192.168.4.1/
+   ```
+4. Na aba **Configuração**, informe o SSID e a Senha da sua rede Wi-Fi (2.4 GHz) no cartão **1. Wi-Fi** e a sua chave no cartão **2. Gemini Live**;
+5. Clique no botão **Salvar e reiniciar**. O firmware criará as pastas e gravará os arquivos correspondentes no MicroSD automaticamente, reiniciando o robô já conectado à sua rede local!
+
+### Opção 2: Preparação Manual dos Arquivos no MicroSD (no Computador)
+Se preferir preparar o cartão diretamente no PC antes de ligar o robô:
+1. Conecte o cartão MicroSD ao computador;
+2. Crie a pasta `/app/StackChan/config/` e o arquivo `/app/StackChan/config/runtime.json`:
+   ```json
+   {
+     "robot_id": "pix",
+     "wifi_enabled": true,
+     "wifi_ssid": "NOME_DO_SEU_WIFI",
+     "web_enabled": true,
+     "gemini_enabled": true,
+     "gemini_model": "models/gemini-3.8-live",
+     "gemini_voice": "Puck",
+     "gateway_enabled": false
+   }
+   ```
+3. Crie a pasta `/app/StackChan/secrets/` e os arquivos de texto simples (sem quebras de linha adicionais):
+   - `/app/StackChan/secrets/wifi_password.txt` contendo a senha do Wi-Fi;
+   - `/app/StackChan/secrets/gemini_api_key.txt` contendo a chave da Gemini API.
+4. Insira o cartão no CoreS3 e ligue o dispositivo.
+
+*(Consulte a referência completa da estrutura do cartão em [docs/SD_LAYOUT.md](docs/SD_LAYOUT.md)).*
+
+---
+
+## 🌐 6. Configuração de Wi-Fi e Acesso à WebView
+
+### Conexão Normal vs. Ponto de Acesso de Emergência (SoftAP)
+- **Modo Normal:** Ao ligar, o CoreS3 exibe o Dashboard de Boot por 15 segundos enquanto se conecta ao seu Wi-Fi doméstico. Conectado, ele exibe seu endereço IP local (ex.: `192.168.1.105`).
+- **Modo SoftAP (Fallback):** Se o Wi-Fi configurado não for encontrado em 15 segundos ou se o cartão não tiver credenciais, a Pix cria automaticamente sua própria rede Wi-Fi para configuração:
+  - **Nome da Rede (SSID):** `<robot_id>-setup-XXXX` (por exemplo: `stackchan-setup-XXXX` ou `pix-setup-XXXX`, onde `XXXX` são os 4 dígitos finais do MAC da placa);
+  - **Senha do Wi-Fi:** `stackchanXXXX` (a palavra `stackchan` em minúsculas seguida dos mesmos 4 dígitos em maiúsculas);
+  - **Endereço IP:** `http://192.168.4.1/`.
+
+> [!NOTE]
+> **Compatibilidade Wi-Fi:** O ESP32-S3 requer redes **2.4 GHz** com autenticação **WPA/WPA2-Personal (PSK)**. Redes corporativas WPA2/WPA3-Enterprise (802.1X com usuário de domínio, como eduroam) **não são suportadas**.
+
+### Acessando a Interface Web (WebView)
+Com o robô e o computador/smartphone na mesma rede local:
+- Acesse pelo navegador: `http://<IP_DO_ROBO>/` (ex.: `http://192.168.1.105/`).
+- O acesso é realizado sempre pelo endereço IP numérico (não utiliza mDNS / `.local`).
+
+### Estrutura da WebView Moderna
+A interface Web é dividida em três abas principais:
+1. **Status:** Telemetria em tempo real (bateria, tensão, RSSI, status da conexão Gemini Live, turnos de fala, memória livre Heap/PSRAM, sensores e notícias em cache);
+2. **Configuração:** Painel moderno com cartões modulares:
+   - **1. Wi-Fi:** Habilitação, SSID e senha segura com botão de revelação;
+   - **2. Gemini Live:** Habilitação, seleção de modelo, voz e chave de API protegida;
+   - **3. ToolGateway:** Habilitação, URL HTTPS do Worker e chave secreta HMAC-SHA256 (com botão "Gerar nova chave" e botão "Copiar");
+   - **4. Energia e repouso:** Apresentação gráfica dos ciclos validados de sleep e deep sleep;
+   - **5. Áudio & Fala:** Volume e calibração fina de ganho do microfone e VAD;
+   - **6. Segurança Web & Sistema:** Fuso horário, identificador do robô e senha de proteção Web;
+   - **7. Prompts Adicionais:** Overlays de sistema e persona para ajuste de comportamento.
+   - **Ações:** Botões "Salvar configurações" e "Salvar e reiniciar" (campos de segredo deixados em branco preservam os valores gravados).
+3. **Memória:** Inspeção dos diálogos recentes, resumos periódicos e busca no banco de fatos gravados no MicroSD.
+
+---
+
+## 🤖 7. Gemini Live e Configuração da API
+
+- **Obtenção da Chave:** Obtenha uma chave de API no [Google AI Studio](https://aistudio.google.com/) (conforme a disponibilidade de plano, cotas e termos vigentes da Google).
+- **Modelo Padrão Validado:** O firmware utiliza nativamente o modelo `models/gemini-3.8-live` com voz `Puck`, testado e validado em hardware com áudio estável e baixa latência.
+- **Funcionamento com Free Tier:** O setup de conexão do firmware foi ajustado para remover o parâmetro legado de Google Search Grounding nativo. No ambiente testado, essa modificação permitiu que chaves configuradas na camada de avaliação gratuita (*Free Tier*) conectassem com sucesso (`connected=true`, `ready=true`). *(Ressalta-se que políticas de cotas, limites por minuto e níveis de acesso gratuito são estabelecidos exclusivamente pelo Google e podem ser alterados pelo provedor sem aviso prévio).*
+- **Início da Conversa:**
+  - **Por Toque na Tela:** Toque em qualquer parte do display para armar a conversa;
+  - **Por Aceno:** Faça um gesto rápido de mão a cerca de 15 a 30 cm do sensor Laser ToF.
+- **Independência do Worker:** O Gemini Live opera de forma autônoma para diálogos de voz gerais sem exigir nenhum gateway externo. O ToolGateway é necessário apenas caso se deseje busca web e consulta de compromissos na agenda.
+
+---
+
+## ☁️ 8. ToolGateway, Cloudflare Worker, TinyFish e Google Calendar
+
+Para dotar a Pix de informações externas em tempo real, o firmware utiliza uma arquitetura baseada em um **Cloudflare Worker** próprio que atua como **ToolGateway**:
+
+```text
+Pix (CoreS3) ──[POST /v2/call + HMAC-SHA256]──> Cloudflare Worker ──┬──> TinyFish API (web_search)
+                                                                    └──> Google Calendar ICS (get_agenda)
+```
+
+### Autenticação Criptográfica HMAC-SHA256
+Todas as chamadas para o Worker no endpoint `POST /v2/call` são protegidas por:
+- `X-Timestamp`: Unix timestamp em segundos (janela de tolerância: ±120s);
+- `X-Nonce`: 32 caracteres hexadecimais aleatórios;
+- `X-Signature`: Assinatura HMAC-SHA256 calculada sobre o método, path, timestamp, nonce e payload JSON.
+
+### Como Configurar seu Próprio Worker:
+1. Navegue até o diretório `cloudflare-worker/` deste repositório;
+2. Siga as instruções do [cloudflare-worker/README.md](cloudflare-worker/README.md) para implantar o Worker na Cloudflare (utilizando o plano gratuito ou padrão do serviço, respeitando os limites e cotas da plataforma);
+3. Configure os três segredos no Worker:
+   - `HMAC_SHARED_KEY`: chave de 64 caracteres hexadecimais;
+   - `TINYFISH_API_KEY`: sua chave de API para o serviço de busca [TinyFish](https://tinyfish.ai/) (sujeita aos termos e planos de uso do provedor);
+   - `CALENDAR_ICS_URL`: a URL privada (`https://...`) do feed iCalendar do seu Google Agenda.
+4. Na WebView da Pix (aba **Configuração** > cartão **3. ToolGateway**):
+   - Ative a opção **Habilitar ToolGateway**;
+   - Cole a URL do seu Worker no campo **URL Base do ToolGateway** (ex.: `https://pix-tool-gateway.seu-usuario.workers.dev`);
+   - Preencha ou gere a **Chave Secreta HMAC-SHA256** idêntica à configurada no Worker;
+   - Clique em **Salvar configurações**.
+
+---
+
+## 🔒 9. Arquitetura, Segurança e Memória
+
+- **Separação Local vs. Remoto:** Operações críticas de voz, processamento de sensores e movimentação são executadas localmente no microcontrolador. Apenas consultas que necessitam de processamento de texto pesado (como expansão de regras `RRULE` de agendas grandes ou scraping web) são delegadas ao Worker.
+- **Segredos Isolados e Fora do Git:** Chaves de API, senhas de Wi-Fi e URLs de agenda nunca são gravadas no código-fonte. Ficam restritas ao cartão MicroSD da Pix ou às variáveis protegidas do Cloudflare Worker.
+- **Isolamento de Rede:** A WebView local da Pix foi projetada para operação em rede local (LAN). Nunca exponha as portas da Pix diretamente para a internet aberta sem autenticação e VPN/firewall.
+- **Memória Local:** A Pix armazena dados de diálogos e resumos na pasta `/app/StackChan/memory/` do MicroSD. Caso você queira transferir o robô ou o cartão para outra pessoa, lembre-se de limpar os arquivos dessa pasta.
+
+---
+
+## ⚡ 10. Gerenciamento de Energia e Sensores
+
+O CoreS3 possui um sistema integrado de gerenciamento de energia de dois estágios, validado em hardware:
+
+1. **Repouso Visual (~2 minutos sem interação):**
+   - A Pix fecha os olhos e entra em animação de sono leve (`sleep`);
+   - O áudio e a conexão de rede permanecem disponíveis;
+   - O robô acorda imediatamente ao detectar toque ou presença no ToF.
+2. **Deep Sleep Automático (15 minutos sem interação humana real):**
+   - Se permanecer 15 minutos contínuos sem comandos de voz ou toques, a Pix entra em **Deep Sleep profundo** para preservar a bateria e os componentes;
+   - Desliga a alimentação dos servos motores (corta a linha de 5 V);
+   - Desconecta intencionalmente a sessão do Gemini Live;
+   - Desliga os LEDs, amplificador de som e rádio Wi-Fi;
+   - Coloca a CPU ESP32-S3 em sono profundo com:
+     ```cpp
+     M5.Power.deepSleep(M5.Power.sleep_no_timer, true);
+     ```
+3. **Despertar por Toque na Tela:**
+   - Basta encostar o dedo na tela touchscreen do CoreS3;
+   - O controlador de toque aciona o pino de interrupção (`ESP_SLEEP_WAKEUP_EXT1`), acordando o robô imediatamente;
+   - A Pix executa a inicialização rápida, reconecta ao Wi-Fi e ao Gemini Live e volta a interagir normalmente.
+
+---
+
+## 💻 11. Compilação pelo Código-Fonte
+
+Para compilar, auditar ou customizar o firmware do robô:
+
+```bash
+# 1. Instalar PlatformIO
+pip install -U platformio
+
+# 2. Clonar o repositório
+git clone https://github.com/nilorcj/StackChan-Gemini-PTBR.git
+cd StackChan-Gemini-PTBR
+
+# 3. Compilar
 pio run -e m5stack-cores3
 
-# Gravar no M5Stack CoreS3 via USB
+# 4. Gravar no CoreS3 via USB
 pio run -e m5stack-cores3 -t upload
 
-# Acompanhar o log serial
+# 5. Monitorar logs de inicialização
 pio device monitor -b 115200
 ```
 
 ---
 
-## 🌐 Configuração de Wi-Fi e Acesso ao Web Viewer
+## ⚠️ 12. Limitações Conhecidas
 
-Esta seção explica passo a passo como conectar a Pix à sua rede Wi-Fi, como funciona a rede de emergência quando ela não encontra o roteador e como acessar o painel de controle (Web Viewer).
-
-### 1. Comportamento e Modos de Operação
-
-A Pix opera em dois modos distintos de rede:
-
-* **Modo Normal (Conectada ao Roteador Doméstico / 2.4 GHz):**
-  * Quando a Pix encontra o Wi-Fi configurado, ela se conecta automaticamente durante os 15 segundos da tela de boot e recebe um endereço IP local dinâmico via DHCP (ex.: `192.168.1.105` ou `10.0.0.45`).
-  * O Gemini Live, os sensores e a sincronização de data/hora/agenda tornam-se plenamente operacionais.
-  * O Web Viewer fica acessível diretamente pelo endereço IP local do robô na rede da sua casa (ex.: `http://192.168.1.105/`).
-* **Modo Ponto de Acesso de Configuração (Fallback / Emergência):**
-  * Se o Wi-Fi configurado não for encontrado após a tela de boot (15 segundos) ou se for a primeira vez que você liga a Pix sem configurar o SD, ela entra automaticamente em modo **SoftAP**.
-  * A Pix cria uma rede Wi-Fi própria temporária para que você possa se conectar via celular ou notebook e configurar a rede da sua casa.
-  * Neste modo, não há conexão com a internet (o Gemini Live permanece offline até que uma rede válida seja configurada e a Pix seja reiniciada).
+- **Redes Wi-Fi:** Suporte restrito a redes de **2.4 GHz** com segurança **WPA-PSK / WPA2-PSK**. Redes 5 GHz e redes autenticadas com credenciais corporativas (WPA2-Enterprise 802.1X) não são suportadas pelo hardware.
+- **Resolução de Nomes Local (mDNS):** O acesso à interface Web deve ser feito pelo endereço IP da Pix (`http://192.168.x.x/`); o firmware não responde por nomes de domínio locais (ex.: `pix.local`).
+- **Cartão MicroSD Requerido:** O firmware requer um cartão MicroSD formatado em FAT32 inserido para inicializar as credenciais e conexões de rede.
+- **Natureza do Projeto:** Este é um projeto de código aberto voltado a desenvolvedores, estudantes e entusiastas de robótica e inteligência artificial.
 
 ---
 
-### 2. Rede de Configuração (Modo AP) — Dados de Conexão
+## 📚 13. Documentação Complementar, Créditos e Licença
 
-Quando a Pix estiver no modo de configuração, conecte seu smartphone ou computador à rede Wi-Fi gerada por ela:
+### Documentação Adicional
+- [Compilação e Gravação Detalhada](docs/BUILD_FLASH.md)
+- [Estrutura do Cartão MicroSD](docs/SD_LAYOUT.md)
+- [Matriz de Recursos do Firmware](docs/FEATURES.md)
+- [Guia do Cloudflare Worker](cloudflare-worker/README.md)
+- [Segurança e Configuração Web](docs/WEB_SECURITY.md)
+- [Referência da API HTTP](docs/API.md)
+- [Arquitetura de Memória Local](docs/MEMORY_INTERNALS.md)
 
-* **Nome da Rede (SSID):** `<robot_id>-setup-XXXX` (padrão: `stackchan-setup-XXXX` ou `pix-setup-XXXX`).
-  > **O que é o `XXXX`?** São os últimos 4 caracteres hexadecimais do endereço físico (MAC) do chip ESP32-S3 da sua placa (ex.: `stackchan-setup-4190`).
-* **Senha do Wi-Fi:** `stackchanXXXX`
-  > **Como saber a senha correta:** A senha é sempre a palavra `stackchan` em letras minúsculas seguida **exatamente pelos mesmos 4 caracteres que aparecem no final do nome da rede**.
-  > *Exemplo prático:* se o seu celular encontrar a rede `stackchan-setup-4190`, a senha dessa rede será `stackchan4190`.
-* **Endereço IP do AP:** `192.168.4.1` (IP padrão fixo da Pix).
-* **Porta:** `80` (porta HTTP padrão).
-* **Como acessar:** Conecte o celular ou computador à rede da Pix e abra o navegador no endereço:
-  ```text
-  http://192.168.4.1/
-  ```
+### Créditos
+- Projeto original de referência: [taranton/stackchan-gemini-firmware](https://github.com/taranton/stackchan-gemini-firmware);
+- Stack-chan original por [shakao / robo-stackchan](https://github.com/stack-chan/stack-chan);
+- Desenvolvido e mantido por [@nilorcj](https://github.com/nilorcj).
 
----
-
-### 3. Como Descobrir o IP da Pix na Rede Doméstica
-
-A Pix **não utiliza mDNS nem nome de domínio** (não há suporte a `pix.local` ou `stackchan.local`); o acesso é realizado **sempre pelo endereço IP numérico**.
-
-Para descobrir o IP da Pix quando ela estiver conectada ao seu roteador:
-1. **Diretamente na tela da Pix (Dashboard de Boot):**
-   * Ao ligar a Pix, a tela inicial de diagnóstico é exibida por 15 segundos.
-   * No card superior esquerdo (**Wi-Fi**), quando a conexão for estabelecida, aparecerá o status verde **`OK`** e logo abaixo o **endereço IP atribuído** (ex.: `192.168.1.105`).
-2. **Pelo Monitor Serial USB:**
-   * Se a Pix estiver conectada ao computador via cabo USB a 115200 baud, o log de inicialização exibirá:
-     ```text
-     WiFi: connected during boot screen! ip=192.168.X.X dns=...
-     ```
-3. **Pela lista de clientes do seu roteador:**
-   * Acesse o painel do seu roteador e procure pelo dispositivo ESP32-S3 (prefixo de MAC iniciado por `80:45:6B:...` ou similar).
-
----
-
-### 4. Como Acessar o Painel Web (WebView Moderna)
-
-Com a Pix conectada ao seu Wi-Fi e seu computador/smartphone no mesmo roteador:
-* **Painel Principal:** `http://<IP_DA_PIX>/` (ex.: `http://192.168.0.234/`)
-* **Página de Diagnóstico de Sensores:** `http://<IP_DA_PIX>/sensors`
-
-A interface web foi completamente reformulada com um tema moderno, limpo e responsivo:
-* **Status:** Telemetria em tempo real de bateria, memória livre (Heap e PSRAM), estado do Gemini Live (pronto, ouvindo, falando), sensores de presença/ToF e ambiente, além de notícias em cache.
-* **Configuração:** Painel organizado em cartões limpos com switches modernos:
-  * **1. Wi-Fi:** Ativação, SSID e senha segura (com botão de visualização temporária).
-  * **2. Gemini Live:** Ativação, modelo de IA configurável em tempo de execução, voz sintetizada e Gemini API Key protegida.
-  * **3. ToolGateway:** Ativação, URL do Cloudflare Worker próprio e gerenciamento de chave HMAC-SHA256 (com gerador criptográfico no navegador e botão de cópia rápida).
-  * **4. Energia e repouso:** Apresentação gráfica informativa dos tempos validados no CoreS3 (~2 min sleep visual → 15 min deep sleep → wake por toque na tela).
-  * **5. Áudio avançado:** Volume principal e seção técnica recolhida (`<details>`) para calibração de ganho, filtro de ruído e parâmetros de VAD sem poluição visual.
-  * **6. Segurança Web & Sistema:** Fuso horário oficial, Robot ID e proteção opcional via HTTP Basic Auth (`stackchan`).
-  * **7. Prompts:** Overlays de sistema e personalidade adicionais.
-  * **Ações Globais:** Botões destacados de "Salvar configurações" e "Salvar e reiniciar", preservando valores existentes quando os campos secretos forem deixados em branco.
-* **Memória:** Visualização de diálogos recentes, resumos periódicos e busca semântica no banco de memória local persistente no microSD.
-
----
-
-### Troca rápida de Wi-Fi
-
-Se você levou a Pix para outra casa, escritório ou trocou a senha/roteador Wi-Fi:
-
-#### Método 1 — Pela Rede de Configuração da Pix (Sem computador / Sem retirar o MicroSD)
-1. Ligue a Pix no novo local.
-2. Como ela não encontrará a rede antiga, após os 15 segundos da tela de boot ela entrará em modo AP e criará a rede `stackchan-setup-XXXX`.
-3. No celular ou notebook, conecte-se a essa rede Wi-Fi usando a senha `stackchanXXXX` (onde `XXXX` são os 4 dígitos finais do nome da rede).
-4. Abra o navegador em `http://192.168.4.1/`.
-5. Vá até a aba **Runtime**, localize o campo **Wi-Fi SSID** e digite o nome exato da nova rede Wi-Fi (compatível com 2.4 GHz).
-6. Vá até a aba **Secrets**, localize o campo **Wi-Fi password** e digite a nova senha da rede. Clique em **Save secrets**.
-7. Volte à aba **Runtime** e clique no botão vermelho **Save and reboot** (ou reinicie a Pix no botão lateral de energia).
-8. A Pix reiniciará conectando-se ao novo roteador e exibirá o novo IP na tela de boot!
-
-#### Método 2 — Pelo Cartão MicroSD (Offline no PC)
-1. Desligue a Pix e retire o cartão MicroSD.
-2. Conecte o cartão ao computador:
-   * Abra o arquivo `/app/StackChan/config/runtime.json` e altere o campo `"wifi_ssid": "NomeDaNovaRede"`.
-   * Abra o arquivo `/app/StackChan/secrets/wifi_password.txt` e substitua o texto pela nova senha do Wi-Fi (sem espaços ou quebras de linha adicionais).
-3. Insira o MicroSD de volta na Pix e ligue o robô.
-
----
-
-## 📚 Documentação Adicional
-
-* [Instruções de Compilação e Gravação](docs/BUILD_FLASH.md)
-* [Estrutura do Cartão SD](docs/SD_LAYOUT.md)
-* [Segurança e Configuração Web](docs/WEB_SECURITY.md)
-* [Endpoints e Referência da API HTTP](docs/API.md)
-* [Matriz de Recursos do Firmware](docs/FEATURES.md)
-* [Exemplos de Prompts PT-BR](docs/PROMPTS.md)
-* [Arquitetura de Memória Interna](docs/MEMORY_INTERNALS.md)
-
----
-
-## 📄 Licença
-
-Este projeto é distribuído sob a licença **MIT**. Consulte o arquivo [LICENSE](LICENSE) para obter mais informações.
+### Licença
+Distribuído sob a licença **MIT**. Consulte o arquivo [LICENSE](LICENSE) para obter todos os termos e condições.
